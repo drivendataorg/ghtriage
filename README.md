@@ -1,14 +1,17 @@
 # ghtriage
 
-**GitHub project management and triage tool.**
+**A local, queryable snapshot of a GitHub repository's issues, pull requests, and comments. Built for AI coding agents to assist with project management.**
 
-This package provides a command-line interface (CLI) for:
+**ghtriage** pulls a repository's GitHub data into a local DuckDB database that an agent can cheaply and quickly query with SQL. The motivating use case is project management and triage: an agent asked to find stale issues, likely duplicates, or unanswered questions can answer from the local database in milliseconds instead of paging through the GitHub API, complemented by the commit history already available in the local Git repository.
 
-- pulling all issue, pull request, and comment data for a GitHub repository into a local DuckDB database
-- inspecting the local database schema
-- querying the local database
+The command-line interface (CLI) provides commands for:
 
-The motivation is to provide a local snapshot of the GitHub data that an AI coding agent can cheaply query to help perform project management and triage tasks, such as identifying stale issues by their content. This data would be complemented by the actual commit history available from the local Git repository.
+- pulling all issue, pull request, and comment data for a GitHub repository into the local database
+- showing the state and freshness of the local database
+- inspecting the database schema, including column documentation
+- querying the database with SQL
+
+ghtriage deliberately provides data and access, not judgments. It pre-computes facts that are awkward to derive from the raw tables, but it never scores, ranks, or decides what "stale" or "needs attention" means—that's the user's job to define within the context of their project.
 
 ## Commands
 
