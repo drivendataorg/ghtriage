@@ -919,47 +919,47 @@ degradation paths are unit-tested, but a real sparse repository is the honest ch
 
 **Code**
 
-- [ ] Step 1 — fixtures; `views.py` with `ISSUE_ACTIVITY_SQL` pass-through columns and `create_views`
-- [ ] Step 2 — `VIEW_DOCS` / `VIEW_COLUMN_DOCS`, `COMMENT ON` pass, drift guard green
-- [ ] Step 3 — `comments_keyed` / `comment_agg`; count and timestamp columns
-- [ ] Step 4 — non-author timestamp columns
-- [ ] Step 5 — set-form `participants`; all non-bot split columns
-- [ ] Step 6 — `label_agg` / `assignee_agg`; list columns with empty-list defaults
-- [ ] Step 7 — `{slot}` rendering, `EMPTY` dict, base-table skip, per-view try/except
-- [ ] Step 8 — `UNION ALL BY NAME` padding; type-coercion guards
-- [ ] Step 9 — `PULL_ACTIVITY_SQL`, docs, slots, three-way participant union
-- [ ] Step 10 — `run_pull` calls `create_views` before `fetch_and_annotate`
-- [ ] Step 11 — `get_table_descriptions()` unions `duckdb_views()`
+- [x] Step 1 — fixtures; `views.py` with `ISSUE_ACTIVITY_SQL` pass-through columns and `create_views`
+- [x] Step 2 — `VIEW_DOCS` / `VIEW_COLUMN_DOCS`, `COMMENT ON` pass, drift guard green
+- [x] Step 3 — `comments_keyed` / `comment_agg`; count and timestamp columns
+- [x] Step 4 — non-author timestamp columns
+- [x] Step 5 — set-form `participants`; all non-bot split columns
+- [x] Step 6 — `label_agg` / `assignee_agg`; list columns with empty-list defaults
+- [x] Step 7 — `{slot}` rendering, `EMPTY` dict, base-table skip, per-view try/except
+- [x] Step 8 — `UNION ALL BY NAME` padding; type-coercion guards
+- [x] Step 9 — `PULL_ACTIVITY_SQL`, docs, slots, three-way participant union
+- [x] Step 10 — `run_pull` calls `create_views` before `fetch_and_annotate`
+- [x] Step 11 — `get_table_descriptions()` unions `duckdb_views()`
 
 **Specification conformance**
 
-- [ ] `issue_activity` has exactly the 19 columns in the output spec, in order
-- [ ] `pull_activity` has exactly the 23 columns in the output spec, in order
-- [ ] Every column's type matches the spec
-- [ ] Every column carries a `COMMENT ON COLUMN`; both views carry a `COMMENT ON VIEW`
-- [ ] Row counts equal the base tables exactly
-- [ ] No `non_bot_*` column ever exceeds its total
+- [x] `issue_activity` has exactly the 19 columns in the output spec, in order
+- [x] `pull_activity` has exactly the 23 columns in the output spec, in order
+- [x] Every column's type matches the spec
+- [x] Every column carries a `COMMENT ON COLUMN`; both views carry a `COMMENT ON VIEW`
+- [x] Row counts equal the base tables exactly
+- [x] No `non_bot_*` column ever exceeds its total
 
 **Degradation**
 
-- [ ] Missing base table skips only that view, with a stderr warning and no exception
-- [ ] Missing comment or child tables still produce the full column set
-- [ ] Missing optional columns still produce the full column set, typed
-- [ ] Column sets are identical between a sparse and a fully populated database
+- [x] Missing base table skips only that view, with a stderr warning and no exception
+- [x] Missing comment or child tables still produce the full column set
+- [x] Missing optional columns still produce the full column set, typed
+- [x] Column sets are identical between a sparse and a fully populated database
 
 **Documentation**
 
-- [ ] `README.md` — derived-views subsection and a view-based example
-- [ ] `docs/decisions.md` — created and seeded
-- [ ] `AGENTS.md` — pointer to the decision log
+- [x] `README.md` — derived-views subsection and a view-based example
+- [x] `docs/decisions.md` — created and seeded
+- [x] `AGENTS.md` — pointer to the decision log
 
 **Final**
 
-- [ ] `just lint` clean
-- [ ] `just test` fully green
-- [ ] Manual end-to-end on a real repository, including a second incremental `pull`
-- [ ] Manual check on a repository that has never used assignees or review requests
-- [ ] This plan moved to `docs/plans/archive/`
+- [x] `just lint` clean
+- [x] `just test` fully green
+- [x] Manual end-to-end on a real repository, including a second incremental `pull`
+- [x] Manual check on a repository that has never used assignees or review requests
+- [x] This plan moved to `docs/plans/archive/`
 
 ## Deferred
 

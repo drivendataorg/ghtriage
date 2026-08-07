@@ -62,8 +62,10 @@ ghtriage query "SQL statement" [--format table|csv|json]
 ```bash
 ghtriage schema
 ghtriage schema --table issues
+ghtriage schema --table issue_activity
 ghtriage query "SELECT number, title, state FROM issues LIMIT 5"
 ghtriage query "SELECT count(*) AS n FROM issues" --format json
+ghtriage query "SELECT number, title FROM issue_activity WHERE state = 'open' AND first_non_author_comment_at IS NULL"
 ```
 
 ### Exit codes
@@ -85,6 +87,20 @@ ghtriage query "SELECT count(*) AS n FROM issues" --format json
 ```
 
 The directory manages its own `.gitignore` so that only `config.toml` can be committed to version control; the token, database, and pull state are automatically excluded.
+
+### Derived views
+
+Alongside the raw tables, `pull` creates two views that pre-compute the joins triage questions keep needing. Both are recreated on every pull, and every column carries a description you can read with `ghtriage schema --table <view>`.
+
+- **`issue_activity`** — one row per issue, with comment counts and timestamps, labels, and assignees already joined.
+- **`pull_activity`** — one row per pull request, the same plus review-comment facts and pending review requests.
+
+Two things about them are worth knowing:
+
+- **Pull requests have two separate comment channels.** GitHub's issue-comments endpoint carries PR conversation comments, while the pull-comments endpoint carries only inline review comments. `pull_activity` exposes both as separate columns rather than adding them together, because a PR can have a long discussion and no code review, or the reverse.
+- **Bot activity is split out, not filtered.** `comment_count` counts everything, and `non_bot_comment_count` counts only accounts GitHub does not type as `Bot`. Whether a bot comment means the issue got attention is a judgment, so both numbers are available and neither is imposed. The same pattern applies to review comments and participants.
+
+Everything in these views is recomputable from the raw tables — they are a convenience layer, never a source of truth.
 
 Some behaviors to be aware of:
 

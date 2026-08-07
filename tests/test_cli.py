@@ -260,3 +260,35 @@ def test_status_handles_missing_config_repo(status_cwd: Path, monkeypatch, capsy
     captured = capsys.readouterr()
     assert rc == 0
     assert "unknown" in captured.out
+
+
+@pytest.fixture
+def cwd_with_view(sample_cwd: Path) -> Path:
+    """sample_cwd plus a documented derived view, as create_views() would leave it."""
+    db_path = sample_cwd / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("CREATE VIEW github.issue_activity AS SELECT id, title FROM github.issues")
+        con.execute("COMMENT ON VIEW github.issue_activity IS 'Derived view: one row per issue.'")
+        con.execute("COMMENT ON COLUMN github.issue_activity.id IS 'Pass-through of issues.id.'")
+    return sample_cwd
+
+
+def test_schema_listing_shows_view_description(cwd_with_view: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(cwd_with_view)
+
+    rc = run(["schema"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "issue_activity" in out
+    assert "Derived view: one row per issue." in out
+
+
+def test_schema_table_details_works_on_a_view(cwd_with_view: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(cwd_with_view)
+
+    rc = run(["schema", "--table", "issue_activity"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Pass-through of issues.id." in out

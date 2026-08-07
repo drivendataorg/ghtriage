@@ -185,3 +185,31 @@ def test_get_status_data_returns_table_stats(status_cwd: Path) -> None:
 def test_get_status_data_raises_when_db_missing(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="Database not found"):
         get_status_data(cwd=tmp_path)
+
+
+@pytest.fixture
+def cwd_with_view(sample_cwd: Path) -> Path:
+    """sample_cwd plus a derived view, as create_views() would leave it."""
+    db_path = sample_cwd / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE VIEW github.issue_activity AS SELECT id, title FROM github.issues")
+        conn.execute("COMMENT ON VIEW github.issue_activity IS 'Derived view: one row per issue.'")
+    return sample_cwd
+
+
+def test_get_tables_includes_views(cwd_with_view: Path) -> None:
+    assert "issue_activity" in get_tables(cwd=cwd_with_view)
+
+
+def test_get_table_descriptions_includes_views(cwd_with_view: Path) -> None:
+    """duckdb_tables() excludes views, so a view description would be invisible."""
+    descriptions = get_table_descriptions(cwd=cwd_with_view)
+
+    assert descriptions["issue_activity"] == "Derived view: one row per issue."
+
+
+def test_get_table_columns_works_on_views(cwd_with_view: Path) -> None:
+    assert [name for name, _, _, _ in get_table_columns("issue_activity", cwd=cwd_with_view)] == [
+        "id",
+        "title",
+    ]

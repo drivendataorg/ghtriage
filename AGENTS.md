@@ -14,6 +14,13 @@ This project uses uv for Python environment management and Just as a task runner
 - Linting: `just lint` (variadic)
 - Auto-formatting: `just format` (variadic)
 
+## Design decisions
+
+Schema and data-modelling choices that are non-obvious are recorded in
+[`docs/decisions.md`](/docs/decisions.md), each with the alternative that was rejected. Read it
+before changing the shape of the derived views or the columns they expose — several choices look
+arbitrary without the reasoning, and undoing them reintroduces known problems.
+
 ## Development and testing
 
 - Use red/green test-driven development
