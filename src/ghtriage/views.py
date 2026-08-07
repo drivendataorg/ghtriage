@@ -26,7 +26,7 @@ WITH issues_padded AS (
 ),
 comments_keyed AS (
     SELECT
-        CAST(regexp_extract(issue_url, '/(\d+)$', 1) AS BIGINT) AS issue_number,
+        TRY_CAST(regexp_extract(issue_url, '/(\d+)$', 1) AS BIGINT) AS issue_number,
         user__login AS login,
         user__type AS utype,
         created_at
@@ -35,14 +35,14 @@ comments_keyed AS (
 comment_agg AS (
     SELECT
         i.number AS issue_number,
-        COUNT(c.created_at) AS comment_count,
+        COUNT(c.issue_number) AS comment_count,
         MIN(c.created_at) AS first_comment_at,
         MAX(c.created_at) AS last_comment_at,
         MIN(c.created_at) FILTER (WHERE c.login IS DISTINCT FROM i.user__login)
             AS first_non_author_comment_at,
         MAX(c.created_at) FILTER (WHERE c.login IS DISTINCT FROM i.user__login)
             AS last_non_author_comment_at,
-        COUNT(c.created_at) FILTER (WHERE c.utype IS DISTINCT FROM 'Bot')
+        COUNT(c.issue_number) FILTER (WHERE c.utype IS DISTINCT FROM 'Bot')
             AS non_bot_comment_count
     FROM issues_padded i
     LEFT JOIN comments_keyed c ON c.issue_number = i.number
@@ -114,7 +114,7 @@ WITH pulls_padded AS (
 conversation_keyed AS (
     -- PR conversation comments live in issue_comments, keyed by the PR number.
     SELECT
-        CAST(regexp_extract(issue_url, '/(\d+)$', 1) AS BIGINT) AS pull_number,
+        TRY_CAST(regexp_extract(issue_url, '/(\d+)$', 1) AS BIGINT) AS pull_number,
         user__login AS login,
         user__type AS utype,
         created_at
@@ -122,7 +122,7 @@ conversation_keyed AS (
 ),
 review_keyed AS (
     SELECT
-        CAST(regexp_extract(pull_request_url, '/(\d+)$', 1) AS BIGINT) AS pull_number,
+        TRY_CAST(regexp_extract(pull_request_url, '/(\d+)$', 1) AS BIGINT) AS pull_number,
         user__login AS login,
         user__type AS utype,
         created_at
@@ -288,25 +288,16 @@ VIEW_COLUMN_DOCS: dict[str, dict[str, str]] = {
             "comments."
         ),
         "closed_at": "Pass-through of issues.closed_at.",
+        "comment_count": (
+            "Count of issue_comments rows matching this issue number, including bot comments. "
+            "May differ from issues.comments if comments were deleted on GitHub after being "
+            "pulled."
+        ),
         "non_bot_comment_count": (
             "Of comment_count, how many were posted by an account GitHub does not type as Bot. "
             "Subtract from comment_count for the bot count. Measures account type, not "
             "automation: machine accounts that are not GitHub Apps are typed User and counted "
             "here."
-        ),
-        "participant_count": (
-            "Number of distinct logins in the set formed by the issue author together with all "
-            "comment authors, including bots. NULL logins are not counted."
-        ),
-        "non_bot_participant_count": (
-            "Of participant_count, how many are accounts GitHub does not type as Bot. Subtract "
-            "from participant_count for the bot count. Excludes the issue author when the issue "
-            "was opened by a bot."
-        ),
-        "comment_count": (
-            "Count of issue_comments rows matching this issue number, including bot comments. "
-            "May differ from issues.comments if comments were deleted on GitHub after being "
-            "pulled."
         ),
         "first_comment_at": (
             "Earliest created_at among matching issue_comments rows, including bot comments. "
@@ -323,6 +314,15 @@ VIEW_COLUMN_DOCS: dict[str, dict[str, str]] = {
         "last_non_author_comment_at": (
             "Latest comment created_at whose author differs from the issue author, including "
             "bot comments. NULL when there is none."
+        ),
+        "participant_count": (
+            "Number of distinct logins in the set formed by the issue author together with all "
+            "comment authors, including bots. NULL logins are not counted."
+        ),
+        "non_bot_participant_count": (
+            "Of participant_count, how many are accounts GitHub does not type as Bot. Subtract "
+            "from participant_count for the bot count. Excludes the issue author when the issue "
+            "was opened by a bot."
         ),
     },
     "pull_activity": {
@@ -437,18 +437,29 @@ def create_views(db_path: Path) -> None:
     Best-effort: a view that fails to build warns on stderr and does not stop the
     others, so a view problem never fails a pull.
     """
-    with duckdb.connect(str(db_path)) as con:
-        present = _present_tables(con)
+    try:
+        with duckdb.connect(str(db_path)) as con:
+            present = _present_tables(con)
+            for name, sql in VIEWS.items():
+                _create_one(con, name, sql, present)
+    except Exception as exc:
+        print(f"Warning: view creation failed: {exc}", file=sys.stderr)
 
-        for name, sql in VIEWS.items():
-            if BASE_TABLES[name] not in present:
-                continue
-            try:
-                con.execute(f"CREATE OR REPLACE VIEW github.{name} AS {_render(sql, present)}")
 
-                # CREATE OR REPLACE drops comments, so they are reapplied every time.
-                con.execute(f"COMMENT ON VIEW github.{name} IS {_quote(VIEW_DOCS[name])}")
-                for column, doc in VIEW_COLUMN_DOCS[name].items():
-                    con.execute(f"COMMENT ON COLUMN github.{name}.{column} IS {_quote(doc)}")
-            except Exception as exc:
-                print(f"Warning: could not create view {name}: {exc}", file=sys.stderr)
+def _create_one(con: duckdb.DuckDBPyConnection, name: str, sql: str, present: set[str]) -> None:
+    base = BASE_TABLES[name]
+    if base not in present:
+        print(
+            f"Note: skipping view {name}; source table {base} is not present yet.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        con.execute(f"CREATE OR REPLACE VIEW github.{name} AS {_render(sql, present)}")
+
+        # CREATE OR REPLACE drops comments, so they are reapplied every time.
+        con.execute(f"COMMENT ON VIEW github.{name} IS {_quote(VIEW_DOCS[name])}")
+        for column, doc in VIEW_COLUMN_DOCS[name].items():
+            con.execute(f"COMMENT ON COLUMN github.{name}.{column} IS {_quote(doc)}")
+    except Exception as exc:
+        print(f"Warning: could not create view {name}: {exc}", file=sys.stderr)

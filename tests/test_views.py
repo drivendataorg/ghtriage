@@ -231,6 +231,14 @@ def rows(db_path: Path, sql: str) -> list[tuple]:
         return con.execute(sql).fetchall()
 
 
+def typed_columns(db_path: Path, view: str) -> list[tuple[str, str]]:
+    return rows(
+        db_path,
+        "SELECT column_name, data_type FROM information_schema.columns "
+        f"WHERE table_schema='github' AND table_name='{view}' ORDER BY ordinal_position",
+    )
+
+
 def columns(db_path: Path, view: str) -> list[str]:
     return [
         r[0]
@@ -731,8 +739,10 @@ def test_create_views_column_set_identical_with_and_without_optional_sources(
     for path in (db, sparse_db, unpadded_db):
         create_views(path)
 
-    assert columns(sparse_db, "issue_activity") == columns(db, "issue_activity")
-    assert columns(unpadded_db, "issue_activity") == columns(db, "issue_activity")
+    # Types, not just names: a mistyped EMPTY stand-in changes a sparse repo's
+    # column types while every name still matches.
+    assert typed_columns(sparse_db, "issue_activity") == typed_columns(db, "issue_activity")
+    assert typed_columns(unpadded_db, "issue_activity") == typed_columns(db, "issue_activity")
 
 
 def test_create_views_padding_preserves_real_values(db: Path) -> None:
@@ -744,23 +754,57 @@ def test_create_views_padding_preserves_real_values(db: Path) -> None:
     ) == [("completed", _ts("2026-01-07"))]
 
 
-def test_padding_does_not_coerce_existing_column_type(db: Path) -> None:
-    """A mistyped padding entry would silently rewrite every row of a real column.
-
-    UNION ALL BY NAME coerces rather than erroring, so the declared padding types
-    must match what dlt produces.
+def test_padding_does_not_coerce_existing_column_values(tmp_path: Path) -> None:
+    """UNION ALL BY NAME coerces instead of erroring, and the padding runs on every
+    pull, not only when a column is absent. If a padding type ever stops matching
+    what dlt produces, real values get silently rewritten -- a naive TIMESTAMP
+    padded as TIMESTAMP WITH TIME ZONE is reinterpreted in the machine's local zone.
     """
-    create_views(db)
-
-    types = dict(
-        rows(
-            db,
-            "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema='github' AND table_name='issue_activity'",
-        )
+    path = tmp_path / "typed.duckdb"
+    con = duckdb.connect(str(path))
+    _create_schema(con)
+    closed = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+    con.executemany(
+        "INSERT INTO github.issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (
+                1,
+                "closed",
+                "closed",
+                "completed",
+                "alice",
+                "User",
+                _d(1),
+                _d(2),
+                closed,
+                0,
+                None,
+                "i1",
+            )
+        ],
     )
-    assert types["closed_at"] == "TIMESTAMP WITH TIME ZONE"
-    assert types["state_reason"] == "VARCHAR"
+    con.close()
+
+    create_views(path)
+
+    # Value survives the padding union byte for byte, and keeps its declared type.
+    assert rows(path, "SELECT closed_at, state_reason FROM github.issue_activity") == [
+        (closed, "completed")
+    ]
+    assert dict(typed_columns(path, "issue_activity"))["closed_at"] == "TIMESTAMP WITH TIME ZONE"
+
+
+@pytest.mark.parametrize("fixture", ["db", "sparse_db", "unpadded_db"])
+def test_view_types_match_spec_on_sparse_databases(
+    request: pytest.FixtureRequest, fixture: str
+) -> None:
+    """Type conformance must hold where padding and EMPTY stand-ins are load-bearing,
+    not only on a fully populated database."""
+    path = request.getfixturevalue(fixture)
+
+    create_views(path)
+
+    assert typed_columns(path, "issue_activity") == ISSUE_ACTIVITY_SPEC
 
 
 # ---------------------------------------------------------------------------
@@ -847,7 +891,7 @@ def test_create_views_pull_activity_degrades(sparse_db: Path, db: Path) -> None:
     create_views(sparse_db)
     create_views(db)
 
-    assert columns(sparse_db, "pull_activity") == columns(db, "pull_activity")
+    assert typed_columns(sparse_db, "pull_activity") == typed_columns(db, "pull_activity")
     assert rows(
         sparse_db,
         "SELECT comment_count, non_bot_comment_count, review_comment_count, "
@@ -1011,3 +1055,95 @@ def test_create_views_reapplies_comments_after_replace(db: Path) -> None:
         db,
         "SELECT count(*) FROM duckdb_views() WHERE schema_name='github' AND comment IS NULL",
     ) == [(0,)]
+
+
+def test_create_views_non_author_columns_handle_null_author(tmp_path: Path) -> None:
+    """A deleted-account author must not swallow the non-author timestamps.
+
+    Under `<>` the comparison against a NULL author yields NULL, so every comment
+    is dropped from the filter and the columns read as "nobody replied" -- which
+    contradicts what the column comment says they mean.
+    """
+    path = tmp_path / "ghostauthor.duckdb"
+    con = duckdb.connect(str(path))
+    _create_schema(con)
+    con.executemany(
+        "INSERT INTO github.issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(1, "ghost author", "open", None, None, None, _d(1), _d(3), None, 1, None, "i1")],
+    )
+    con.executemany(
+        "INSERT INTO github.issue_comments VALUES (?,?,?,?,?,?)",
+        [(1, _api("issues", 1), "bob", "User", _d(2), _d(2))],
+    )
+    con.close()
+
+    create_views(path)
+
+    assert rows(
+        path,
+        "SELECT first_non_author_comment_at, last_non_author_comment_at "
+        "FROM github.issue_activity",
+    ) == [(_d(2), _d(2))]
+
+
+def test_create_views_tolerates_unparseable_comment_url(tmp_path: Path) -> None:
+    """A URL without a trailing number must not break every query on the view.
+
+    The cast happens at SELECT time, so a hard CAST would build the view fine and
+    then fail on use, where the per-view try/except cannot help.
+    """
+    path = tmp_path / "badurl.duckdb"
+    con = duckdb.connect(str(path))
+    _create_schema(con)
+    con.executemany(
+        "INSERT INTO github.issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(1, "fine", "open", None, "alice", "User", _d(1), _d(1), None, 0, None, "i1")],
+    )
+    con.executemany(
+        "INSERT INTO github.issue_comments VALUES (?,?,?,?,?,?)",
+        [(1, "https://api.github.com/repos/o/r/issues/not-a-number", "bob", "User", _d(2), _d(2))],
+    )
+    con.close()
+
+    create_views(path)
+
+    assert rows(path, "SELECT number, comment_count FROM github.issue_activity") == [(1, 0)]
+
+
+def test_create_views_warns_and_survives_an_unusable_database(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """A pull must not fail because the view step could not open the database.
+
+    create_views runs before fetch_and_annotate, so raising here would also skip
+    annotation -- a regression against the behaviour without views.
+    """
+    path = tmp_path / "corrupt.duckdb"
+    path.write_bytes(b"this is not a duckdb file" * 100)
+
+    create_views(path)  # must not raise
+
+    assert "view creation failed" in capsys.readouterr().err
+
+
+def test_create_views_warns_when_base_table_is_absent(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Silently producing no pull_activity leaves a repo with no pull requests
+    wondering where the view went."""
+    path = tmp_path / "issuesonly.duckdb"
+    con = duckdb.connect(str(path))
+    _create_schema(con)
+    con.execute("DROP TABLE github.pulls")
+    con.close()
+
+    create_views(path)
+
+    err = capsys.readouterr().err
+    assert "pull_activity" in err and "pulls" in err
+    assert "issue_activity" in columns_present(path)
+    assert "pull_activity" not in columns_present(path)
+
+
+def columns_present(db_path: Path) -> set[str]:
+    return {r[0] for r in rows(db_path, "SELECT view_name FROM duckdb_views()")}

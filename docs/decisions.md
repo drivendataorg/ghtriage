@@ -83,4 +83,6 @@ and the SQL stays readable and pasteable into `ghtriage query`.
 Rejected: trusting the `UNION ALL BY NAME` padding to be inert. It coerces rather than erroring, and
 it runs on every pull rather than only when a column is absent, so a mistyped entry silently
 rewrites real values — a naive `TIMESTAMP` padded as `TIMESTAMP WITH TIME ZONE` is reinterpreted in
-the machine's local zone. `test_view_column_types_match_spec` pins this.
+the machine's local zone. `test_padding_does_not_coerce_existing_column_values` pins the
+values, and `test_view_types_match_spec_on_sparse_databases` pins the types on the sparse
+databases where the padding and the empty stand-ins are load-bearing.
