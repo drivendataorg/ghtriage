@@ -88,6 +88,12 @@ ghtriage query "SELECT number, title FROM issue_activity WHERE state = 'open' AN
 
 The directory manages its own `.gitignore` so that only `config.toml` can be committed to version control; the token, database, and pull state are automatically excluded.
 
+Some behaviors to be aware of:
+
+- **The database is a snapshot.** It reflects GitHub as of the last `pull` and never updates on its own. Use `status` to see what repository is in the database and how fresh the data is.
+- **Pulls are incremental.** Re-running `pull` fetches only what changed since the last pull, so it is cheap to run often. Use `--full` to delete the database and rebuild from scratch.
+- **The target repository is resolved automatically.** In order of precedence: the `--repo` flag, the default set in `.ghtriage/config.toml`, then the current repository's git `origin` remote.
+
 ### What gets pulled
 
 | Table | Contents |
@@ -115,10 +121,4 @@ They are rebuilt each time the data refreshes, and every column carries a descri
 - **Pull requests have two separate comment channels.** GitHub's issue-comments endpoint carries conversation comments on both issues and pull requests, while the pull-comments endpoint carries only inline review comments — which is why the tables are named `conversation_comments` and `review_comments` rather than after the endpoints they come from. `pull_request_activity` exposes both as separate columns rather than adding them together, because a PR can have a long discussion and no code review, or the reverse.
 - **Bot activity is split out, not filtered.** `comment_count` counts everything, and `non_bot_comment_count` counts only accounts GitHub does not type as `Bot`. Whether a bot comment means the issue got attention is a judgment, so both numbers are available and neither is imposed. The same pattern applies to review comments and participants.
 
-Everything in these views is recomputable from the raw tables — they are a convenience layer, never a source of truth.
-
-Some behaviors to be aware of:
-
-- **The database is a snapshot.** It reflects GitHub as of the last `pull` and never updates on its own. Use `status` to see what repository is in the database and how fresh the data is.
-- **Pulls are incremental.** Re-running `pull` fetches only what changed since the last pull, so it is cheap to run often. Use `--full` to delete the database and rebuild from scratch.
-- **The target repository is resolved automatically.** In order of precedence: the `--repo` flag, the default set in `.ghtriage/config.toml`, then the current repository's git `origin` remote.
+Everything in these views is recomputable from the raw tables—they are a convenience layer.
