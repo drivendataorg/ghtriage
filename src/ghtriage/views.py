@@ -17,6 +17,8 @@ WITH issues_padded AS (
     -- the table already has and adds the rest as typed NULLs. The declared types
     -- must match what dlt produces: a mismatch coerces silently rather than
     -- erroring, and this union runs on every pull, not only when a column is absent.
+    -- Pinned by test_padding_does_not_coerce_existing_column_values (values) and
+    -- test_view_types_match_spec_on_sparse_databases (types).
     SELECT * FROM github.issues
     UNION ALL BY NAME
     SELECT
@@ -26,6 +28,9 @@ WITH issues_padded AS (
 ),
 comments_keyed AS (
     SELECT
+        -- TRY_CAST, not CAST: a URL with no trailing number yields '', and a hard
+        -- cast would raise at SELECT time -- after the view was created, where the
+        -- creation guard cannot help.
         TRY_CAST(regexp_extract(issue_url, '/(\d+)$', 1) AS BIGINT) AS issue_number,
         user__login AS login,
         user__type AS utype,
@@ -35,6 +40,8 @@ comments_keyed AS (
 comment_agg AS (
     SELECT
         i.number AS issue_number,
+        -- Counts joined rows: c.issue_number is NULL exactly when the LEFT JOIN
+        -- missed, so COUNT(*) would report 1 for an issue with no comments.
         COUNT(c.issue_number) AS comment_count,
         MIN(c.created_at) AS first_comment_at,
         MAX(c.created_at) AS last_comment_at,
@@ -42,6 +49,8 @@ comment_agg AS (
             AS first_non_author_comment_at,
         MAX(c.created_at) FILTER (WHERE c.login IS DISTINCT FROM i.user__login)
             AS last_non_author_comment_at,
+        -- IS DISTINCT FROM, not <>: under <> a NULL user__type falls into neither
+        -- bucket, breaking the documented `bot count = total - non_bot`.
         COUNT(c.issue_number) FILTER (WHERE c.utype IS DISTINCT FROM 'Bot')
             AS non_bot_comment_count
     FROM issues_padded i
@@ -49,6 +58,9 @@ comment_agg AS (
     GROUP BY i.number
 ),
 participants AS (
+    -- A set, not "distinct non-author commenters + 1": the non-bot count has to be
+    -- drawn from the same set as the total for the subtraction to hold, including
+    -- when the item was opened by a bot.
     SELECT i.number AS issue_number, i.user__login AS login, i.user__type AS utype
     FROM issues_padded i
     UNION
@@ -69,6 +81,8 @@ label_agg AS (
     GROUP BY _dlt_parent_id
 ),
 assignee_agg AS (
+    -- From the child table: the deprecated assignee__login does not populate
+    -- reliably when there is more than one assignee.
     SELECT _dlt_parent_id, list(login ORDER BY login) AS assignees
     FROM {issues__assignees}
     GROUP BY _dlt_parent_id
@@ -149,6 +163,9 @@ review_agg AS (
     GROUP BY pull_number
 ),
 participants AS (
+    -- A set, not "distinct non-author commenters + 1": the non-bot count has to be
+    -- drawn from the same set as the total for the subtraction to hold, including
+    -- when the item was opened by a bot.
     SELECT p.number AS pull_number, p.user__login AS login, p.user__type AS utype
     FROM pulls_padded p
     UNION
@@ -171,6 +188,8 @@ label_agg AS (
     GROUP BY _dlt_parent_id
 ),
 assignee_agg AS (
+    -- From the child table: the deprecated assignee__login does not populate
+    -- reliably when there is more than one assignee.
     SELECT _dlt_parent_id, list(login ORDER BY login) AS assignees
     FROM {pulls__assignees}
     GROUP BY _dlt_parent_id
@@ -434,8 +453,10 @@ def _render(sql: str, present: set[str]) -> str:
 def create_views(db_path: Path) -> None:
     """Create or replace every derived view in the `github` schema.
 
-    Best-effort: a view that fails to build warns on stderr and does not stop the
-    others, so a view problem never fails a pull.
+    Best-effort, and deliberately guarded at the outermost level: the connection and
+    the schema probe are inside the try too, so a locked or unreadable database warns
+    rather than failing the pull. This runs before annotation, so raising here would
+    skip that as well.
     """
     try:
         with duckdb.connect(str(db_path)) as con:
