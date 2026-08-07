@@ -6,9 +6,10 @@ Findings are not decisions. That roughly half of `issue_comments` rows belong to
 fact, and it lives in the plan documents and the column comments; that the two comment channels are
 kept separate rather than summed is a decision, and it lives here.
 
-Entries cite the issue number and the plan *filename* rather than a path, because implemented plans
-move to `docs/plans/archive/` and a path-based link would break on exactly the move this log exists
-to survive.
+Entries link the plan document that carries the full reasoning, and cite the issue number. Link the
+plan at its archived path: `docs/plans/archive/` is where implemented plans come to rest, so the
+path is stable once a plan lands. Only link a plan still in `docs/plans/` by filename, since it has
+a move ahead of it.
 
 Append new entries at the end.
 
@@ -17,7 +18,8 @@ Append new entries at the end.
 ## Derived activity views
 
 From [#11](https://github.com/jayqi/ghtriage/issues/11) — see
-`2026-08-06-derived-activity-views.md` for the full reasoning and the data behind it.
+[the plan](plans/archive/2026-08-06-derived-activity-views.md) for the full reasoning and the data
+behind it.
 
 **Pull request conversation and review comments stay separate.**
 Rejected: a single combined comment count. GitHub's `/issues/comments` endpoint returns PR
