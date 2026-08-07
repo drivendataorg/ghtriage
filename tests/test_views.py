@@ -22,7 +22,7 @@ from ghtriage.views import EMPTY, VIEW_COLUMN_DOCS, VIEW_DOCS, VIEWS, create_vie
 #     5  ci[bot] (Bot)  open    only a bot commenter -> no non-bot participants
 #     6  NULL author    open    deleted-account login
 #   128  alice (User)   open    multi-digit number, guards the regexp join key
-#   pulls
+#   pull_requests
 #     10 erin (User)    open    conversation comments only, no review comments
 #     11 erin (User)    open    review comments from a human and from a bot
 #     12 frank (User)   open    labels + assignees + pending reviewers all populated
@@ -48,7 +48,7 @@ def _create_schema(con: duckdb.DuckDBPyConnection) -> None:
         )
     """)
     con.execute("""
-        CREATE TABLE github.pulls (
+        CREATE TABLE github.pull_requests (
             number BIGINT, title VARCHAR, state VARCHAR, draft BOOLEAN,
             user__login VARCHAR, user__type VARCHAR,
             created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE,
@@ -57,20 +57,24 @@ def _create_schema(con: duckdb.DuckDBPyConnection) -> None:
         )
     """)
     con.execute("""
-        CREATE TABLE github.issue_comments (
+        CREATE TABLE github.conversation_comments (
             id BIGINT, issue_url VARCHAR, user__login VARCHAR, user__type VARCHAR,
             created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE
         )
     """)
     con.execute("""
-        CREATE TABLE github.pull_comments (
+        CREATE TABLE github.review_comments (
             id BIGINT, pull_request_url VARCHAR, user__login VARCHAR, user__type VARCHAR,
             created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE
         )
     """)
-    for child in ("issues__labels", "pulls__labels"):
+    for child in ("issues__labels", "pull_requests__labels"):
         con.execute(f"CREATE TABLE github.{child} (name VARCHAR, _dlt_parent_id VARCHAR)")
-    for child in ("issues__assignees", "pulls__assignees", "pulls__requested_reviewers"):
+    for child in (
+        "issues__assignees",
+        "pull_requests__assignees",
+        "pull_requests__requested_reviewers",
+    ):
         con.execute(f"CREATE TABLE github.{child} (login VARCHAR, _dlt_parent_id VARCHAR)")
 
 
@@ -114,7 +118,7 @@ def _populate(con: duckdb.DuckDBPyConnection) -> None:
         ],
     )
     con.executemany(
-        "INSERT INTO github.pulls VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO github.pull_requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             (
                 10,
@@ -175,7 +179,7 @@ def _populate(con: duckdb.DuckDBPyConnection) -> None:
         ],
     )
     con.executemany(
-        "INSERT INTO github.issue_comments VALUES (?,?,?,?,?,?)",
+        "INSERT INTO github.conversation_comments VALUES (?,?,?,?,?,?)",
         [
             (101, _api("issues", 1), "bob", "User", _d(5), _d(5)),
             (102, _api("issues", 1), "alice", "User", _d(7), _d(7)),
@@ -190,7 +194,7 @@ def _populate(con: duckdb.DuckDBPyConnection) -> None:
         ],
     )
     con.executemany(
-        "INSERT INTO github.pull_comments VALUES (?,?,?,?,?,?)",
+        "INSERT INTO github.review_comments VALUES (?,?,?,?,?,?)",
         [
             (201, _api("pulls", 11), "hank", "User", _d(5, 2), _d(5, 2)),
             (202, _api("pulls", 11), "Copilot", "Bot", _d(6, 2), _d(6, 2)),
@@ -199,10 +203,10 @@ def _populate(con: duckdb.DuckDBPyConnection) -> None:
     # Inserted unsorted on purpose: the views must sort these.
     con.execute("INSERT INTO github.issues__labels VALUES ('ui','i1'), ('bug','i1'), ('bug','i3')")
     con.execute("INSERT INTO github.issues__assignees VALUES ('zoe','i1'), ('adam','i1')")
-    con.execute("INSERT INTO github.pulls__labels VALUES ('ci','p12'), ('area: db','p12')")
-    con.execute("INSERT INTO github.pulls__assignees VALUES ('yara','p12'), ('bob','p12')")
+    con.execute("INSERT INTO github.pull_requests__labels VALUES ('ci','p12'), ('area: db','p12')")
+    con.execute("INSERT INTO github.pull_requests__assignees VALUES ('yara','p12'), ('bob','p12')")
     con.execute(
-        "INSERT INTO github.pulls__requested_reviewers VALUES ('wes','p12'), ('ann','p12')"
+        "INSERT INTO github.pull_requests__requested_reviewers VALUES ('wes','p12'), ('ann','p12')"
     )
 
 
@@ -479,7 +483,7 @@ def test_create_views_non_bot_counts_treat_null_user_type_as_non_bot(
         "NULL,1,NULL,'i1')"
     )
     con.execute(
-        f"INSERT INTO github.issue_comments VALUES "
+        f"INSERT INTO github.conversation_comments VALUES "
         f"(1,'{_api('issues', 1)}','ghost',NULL,"
         f"'2026-01-02 00:00:00+00','2026-01-02 00:00:00+00')"
     )
@@ -507,7 +511,7 @@ def test_create_views_non_bot_comment_count_counts_non_app_machine_account(
         "NULL,1,NULL,'i1')"
     )
     con.execute(
-        f"INSERT INTO github.issue_comments VALUES "
+        f"INSERT INTO github.conversation_comments VALUES "
         f"(1,'{_api('issues', 1)}','codecov-commenter','User',"
         f"'2026-01-02 00:00:00+00','2026-01-02 00:00:00+00')"
     )
@@ -530,7 +534,7 @@ def test_create_views_non_bot_counts_equal_totals_when_no_bots_present(
         "NULL,1,NULL,'i1')"
     )
     con.execute(
-        f"INSERT INTO github.issue_comments VALUES "
+        f"INSERT INTO github.conversation_comments VALUES "
         f"(1,'{_api('issues', 1)}','bob','User',"
         f"'2026-01-02 00:00:00+00','2026-01-02 00:00:00+00')"
     )
@@ -624,7 +628,7 @@ def sparse_db(tmp_path: Path) -> Path:
         )
     """)
     con.execute("""
-        CREATE TABLE github.pulls (
+        CREATE TABLE github.pull_requests (
             number BIGINT, title VARCHAR, state VARCHAR, draft BOOLEAN,
             user__login VARCHAR, user__type VARCHAR,
             created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE,
@@ -637,7 +641,7 @@ def sparse_db(tmp_path: Path) -> Path:
         [(1, "only issue", "open", None, "alice", "User", _d(1), _d(1), None, "i1")],
     )
     con.executemany(
-        "INSERT INTO github.pulls VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO github.pull_requests VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         [(2, "only pull", "open", False, "bob", "User", _d(1), _d(1), None, None, "p2")],
     )
     con.close()
@@ -808,11 +812,11 @@ def test_view_types_match_spec_on_sparse_databases(
 
 
 # ---------------------------------------------------------------------------
-# Step 9 — pull_activity
+# Step 9 — pull_request_activity
 # ---------------------------------------------------------------------------
 
 
-def test_create_views_pull_activity_separates_conversation_and_review_comments(
+def test_create_views_pull_request_activity_separates_conversation_and_review_comments(
     db: Path,
 ) -> None:
     """GitHub's /issues/comments endpoint carries PR conversation comments.
@@ -824,7 +828,7 @@ def test_create_views_pull_activity_separates_conversation_and_review_comments(
     assert rows(
         db,
         "SELECT number, comment_count, review_comment_count "
-        "FROM github.pull_activity ORDER BY number",
+        "FROM github.pull_request_activity ORDER BY number",
     ) == [(10, 1, 0), (11, 1, 2), (12, 0, 0), (13, 0, 0)]
 
 
@@ -834,7 +838,7 @@ def test_create_views_non_bot_review_comment_count_splits_by_user_type(db: Path)
     assert rows(
         db,
         "SELECT number, review_comment_count, non_bot_review_comment_count, "
-        "comment_count, non_bot_comment_count FROM github.pull_activity ORDER BY number",
+        "comment_count, non_bot_comment_count FROM github.pull_request_activity ORDER BY number",
     ) == [
         (10, 0, 0, 1, 1),
         (11, 2, 1, 1, 0),  # hank human, Copilot bot; conversation comment is codecov
@@ -849,7 +853,7 @@ def test_create_views_pull_participant_count_spans_both_comment_tables(db: Path)
     assert rows(
         db,
         "SELECT number, participant_count, non_bot_participant_count "
-        "FROM github.pull_activity ORDER BY number",
+        "FROM github.pull_request_activity ORDER BY number",
     ) == [
         (10, 2, 2),  # erin, gil
         (11, 4, 2),  # erin, codecov[bot], hank, Copilot -> 2 non-bot
@@ -862,7 +866,7 @@ def test_create_views_pending_reviewers_sorted_and_empty_list_when_none(db: Path
     create_views(db)
 
     assert rows(
-        db, "SELECT number, pending_reviewers FROM github.pull_activity ORDER BY number"
+        db, "SELECT number, pending_reviewers FROM github.pull_request_activity ORDER BY number"
     ) == [(10, []), (11, []), (12, ["ann", "wes"]), (13, [])]
 
 
@@ -873,30 +877,32 @@ def test_create_views_multiple_list_columns_do_not_fan_out(db: Path) -> None:
     assert rows(
         db,
         "SELECT count(*), any_value(labels), any_value(assignees), any_value(pending_reviewers) "
-        "FROM github.pull_activity WHERE number = 12",
+        "FROM github.pull_request_activity WHERE number = 12",
     ) == [(1, ["area: db", "ci"], ["bob", "yara"], ["ann", "wes"])]
 
 
-def test_create_views_pull_activity_passes_through_draft_and_merged_at(db: Path) -> None:
+def test_create_views_pull_request_activity_passes_through_draft_and_merged_at(db: Path) -> None:
     create_views(db)
 
     assert rows(
-        db, "SELECT number, draft, merged_at FROM github.pull_activity ORDER BY number"
+        db, "SELECT number, draft, merged_at FROM github.pull_request_activity ORDER BY number"
     ) == [(10, False, None), (11, False, None), (12, True, None), (13, False, None)]
 
 
-def test_create_views_pull_activity_degrades(sparse_db: Path, db: Path) -> None:
-    """The degradation paths must be re-checked: pull_activity unions three
+def test_create_views_pull_request_activity_degrades(sparse_db: Path, db: Path) -> None:
+    """The degradation paths must be re-checked: pull_request_activity unions three
     participant sources and pads three columns, not two."""
     create_views(sparse_db)
     create_views(db)
 
-    assert typed_columns(sparse_db, "pull_activity") == typed_columns(db, "pull_activity")
+    assert typed_columns(sparse_db, "pull_request_activity") == typed_columns(
+        db, "pull_request_activity"
+    )
     assert rows(
         sparse_db,
         "SELECT comment_count, non_bot_comment_count, review_comment_count, "
         "non_bot_review_comment_count, labels, assignees, pending_reviewers, "
-        "participant_count FROM github.pull_activity",
+        "participant_count FROM github.pull_request_activity",
     ) == [(0, 0, 0, 0, [], [], [], 1)]
 
 
@@ -954,7 +960,7 @@ PULL_ACTIVITY_SPEC = [
     ("non_bot_participant_count", "BIGINT"),
 ]
 
-SPEC = {"issue_activity": ISSUE_ACTIVITY_SPEC, "pull_activity": PULL_ACTIVITY_SPEC}
+SPEC = {"issue_activity": ISSUE_ACTIVITY_SPEC, "pull_request_activity": PULL_ACTIVITY_SPEC}
 
 
 @pytest.mark.parametrize("view", sorted(SPEC))
@@ -976,7 +982,7 @@ def test_view_column_types_match_spec(db: Path, view: str) -> None:
 
 @pytest.mark.parametrize("view", sorted(SPEC))
 def test_view_row_count_matches_base_table(db: Path, view: str) -> None:
-    base = {"issue_activity": "issues", "pull_activity": "pulls"}[view]
+    base = {"issue_activity": "issues", "pull_request_activity": "pull_requests"}[view]
 
     create_views(db)
 
@@ -993,7 +999,7 @@ def test_non_bot_counts_never_exceed_totals(db: Path, view: str) -> None:
         ("non_bot_comment_count", "comment_count"),
         ("non_bot_participant_count", "participant_count"),
     ]
-    if view == "pull_activity":
+    if view == "pull_request_activity":
         pairs.append(("non_bot_review_comment_count", "review_comment_count"))
 
     where = " OR ".join(f"{part} > {total}" for part, total in pairs)
@@ -1010,7 +1016,8 @@ def _snapshot(db_path: Path) -> dict:
         "columns": rows(
             db_path,
             "SELECT table_name, column_name, data_type FROM information_schema.columns "
-            "WHERE table_schema='github' AND table_name IN ('issue_activity','pull_activity') "
+            "WHERE table_schema='github' "
+            "AND table_name IN ('issue_activity','pull_request_activity') "
             "ORDER BY table_name, ordinal_position",
         ),
         "view_comments": rows(
@@ -1021,13 +1028,14 @@ def _snapshot(db_path: Path) -> dict:
         "column_comments": rows(
             db_path,
             "SELECT table_name, column_name, comment FROM duckdb_columns() "
-            "WHERE schema_name='github' AND table_name IN ('issue_activity','pull_activity') "
+            "WHERE schema_name='github' "
+            "AND table_name IN ('issue_activity','pull_request_activity') "
             "ORDER BY table_name, column_name",
         ),
         "counts": rows(
             db_path,
             "SELECT (SELECT count(*) FROM github.issue_activity), "
-            "(SELECT count(*) FROM github.pull_activity)",
+            "(SELECT count(*) FROM github.pull_request_activity)",
         ),
     }
 
@@ -1049,7 +1057,7 @@ def test_create_views_reapplies_comments_after_replace(db: Path) -> None:
     assert rows(
         db,
         "SELECT count(*) FROM duckdb_columns() WHERE schema_name='github' "
-        "AND table_name IN ('issue_activity','pull_activity') AND comment IS NULL",
+        "AND table_name IN ('issue_activity','pull_request_activity') AND comment IS NULL",
     ) == [(0,)]
     assert rows(
         db,
@@ -1072,7 +1080,7 @@ def test_create_views_non_author_columns_handle_null_author(tmp_path: Path) -> N
         [(1, "ghost author", "open", None, None, None, _d(1), _d(3), None, 1, None, "i1")],
     )
     con.executemany(
-        "INSERT INTO github.issue_comments VALUES (?,?,?,?,?,?)",
+        "INSERT INTO github.conversation_comments VALUES (?,?,?,?,?,?)",
         [(1, _api("issues", 1), "bob", "User", _d(2), _d(2))],
     )
     con.close()
@@ -1100,7 +1108,7 @@ def test_create_views_tolerates_unparseable_comment_url(tmp_path: Path) -> None:
         [(1, "fine", "open", None, "alice", "User", _d(1), _d(1), None, 0, None, "i1")],
     )
     con.executemany(
-        "INSERT INTO github.issue_comments VALUES (?,?,?,?,?,?)",
+        "INSERT INTO github.conversation_comments VALUES (?,?,?,?,?,?)",
         [(1, "https://api.github.com/repos/o/r/issues/not-a-number", "bob", "User", _d(2), _d(2))],
     )
     con.close()
@@ -1129,20 +1137,20 @@ def test_create_views_warns_and_survives_an_unusable_database(
 def test_create_views_warns_when_base_table_is_absent(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    """Silently producing no pull_activity leaves a repo with no pull requests
+    """Silently producing no pull_request_activity leaves a repo with no pull requests
     wondering where the view went."""
     path = tmp_path / "issuesonly.duckdb"
     con = duckdb.connect(str(path))
     _create_schema(con)
-    con.execute("DROP TABLE github.pulls")
+    con.execute("DROP TABLE github.pull_requests")
     con.close()
 
     create_views(path)
 
     err = capsys.readouterr().err
-    assert "pull_activity" in err and "pulls" in err
+    assert "pull_request_activity" in err and "pull_requests" in err
     assert "issue_activity" in columns_present(path)
-    assert "pull_activity" not in columns_present(path)
+    assert "pull_request_activity" not in columns_present(path)
 
 
 def columns_present(db_path: Path) -> set[str]:

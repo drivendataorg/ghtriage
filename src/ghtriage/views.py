@@ -35,7 +35,7 @@ comments_keyed AS (
         user__login AS login,
         user__type AS utype,
         created_at
-    FROM {issue_comments}
+    FROM {conversation_comments}
 ),
 comment_agg AS (
     SELECT
@@ -114,10 +114,10 @@ LEFT JOIN label_agg lb ON lb._dlt_parent_id = i._dlt_id
 LEFT JOIN assignee_agg asg ON asg._dlt_parent_id = i._dlt_id
 """
 
-PULL_ACTIVITY_SQL = r"""
+PULL_REQUEST_ACTIVITY_SQL = r"""
 WITH pulls_padded AS (
     -- See the note on issues_padded: declared types must match what dlt produces.
-    SELECT * FROM github.pulls
+    SELECT * FROM github.pull_requests
     UNION ALL BY NAME
     SELECT
         NULL::BOOLEAN AS draft,
@@ -126,13 +126,13 @@ WITH pulls_padded AS (
     WHERE false
 ),
 conversation_keyed AS (
-    -- PR conversation comments live in issue_comments, keyed by the PR number.
+    -- PR conversation comments live in conversation_comments, keyed by the PR number.
     SELECT
         TRY_CAST(regexp_extract(issue_url, '/(\d+)$', 1) AS BIGINT) AS pull_number,
         user__login AS login,
         user__type AS utype,
         created_at
-    FROM {issue_comments}
+    FROM {conversation_comments}
 ),
 review_keyed AS (
     SELECT
@@ -140,7 +140,7 @@ review_keyed AS (
         user__login AS login,
         user__type AS utype,
         created_at
-    FROM {pull_comments}
+    FROM {review_comments}
 ),
 conversation_agg AS (
     SELECT
@@ -184,19 +184,19 @@ participant_agg AS (
 ),
 label_agg AS (
     SELECT _dlt_parent_id, list(name ORDER BY name) AS labels
-    FROM {pulls__labels}
+    FROM {pull_requests__labels}
     GROUP BY _dlt_parent_id
 ),
 assignee_agg AS (
     -- From the child table: the deprecated assignee__login does not populate
     -- reliably when there is more than one assignee.
     SELECT _dlt_parent_id, list(login ORDER BY login) AS assignees
-    FROM {pulls__assignees}
+    FROM {pull_requests__assignees}
     GROUP BY _dlt_parent_id
 ),
 reviewer_agg AS (
     SELECT _dlt_parent_id, list(login ORDER BY login) AS pending_reviewers
-    FROM {pulls__requested_reviewers}
+    FROM {pull_requests__requested_reviewers}
     GROUP BY _dlt_parent_id
 )
 SELECT
@@ -236,7 +236,7 @@ LEFT JOIN reviewer_agg rv ON rv._dlt_parent_id = p._dlt_id
 # Stand-ins for source tables dlt has not created yet. Each must match the shape
 # the CTE around it selects, so the substitution is invisible downstream.
 EMPTY: dict[str, str] = {
-    "issue_comments": (
+    "conversation_comments": (
         "(SELECT NULL::VARCHAR AS issue_url, NULL::VARCHAR AS user__login, "
         "NULL::VARCHAR AS user__type, NULL::TIMESTAMP WITH TIME ZONE AS created_at WHERE false)"
     ),
@@ -246,36 +246,36 @@ EMPTY: dict[str, str] = {
     "issues__assignees": (
         "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS login WHERE false)"
     ),
-    "pull_comments": (
+    "review_comments": (
         "(SELECT NULL::VARCHAR AS pull_request_url, NULL::VARCHAR AS user__login, "
         "NULL::VARCHAR AS user__type, NULL::TIMESTAMP WITH TIME ZONE AS created_at WHERE false)"
     ),
-    "pulls__labels": (
+    "pull_requests__labels": (
         "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS name WHERE false)"
     ),
-    "pulls__assignees": (
+    "pull_requests__assignees": (
         "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS login WHERE false)"
     ),
-    "pulls__requested_reviewers": (
+    "pull_requests__requested_reviewers": (
         "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS login WHERE false)"
     ),
 }
 
 VIEWS: dict[str, str] = {
     "issue_activity": ISSUE_ACTIVITY_SQL,
-    "pull_activity": PULL_ACTIVITY_SQL,
+    "pull_request_activity": PULL_REQUEST_ACTIVITY_SQL,
 }
 
 BASE_TABLES: dict[str, str] = {
     "issue_activity": "issues",
-    "pull_activity": "pulls",
+    "pull_request_activity": "pull_requests",
 }
 
 VIEW_DOCS: dict[str, str] = {
     "issue_activity": (
         "Derived view: one row per issue with pre-joined comment activity, labels, and assignees."
     ),
-    "pull_activity": (
+    "pull_request_activity": (
         "Derived view: one row per pull request with pre-joined conversation-comment, "
         "review-comment, label, assignee, and review-request facts."
     ),
@@ -308,9 +308,9 @@ VIEW_COLUMN_DOCS: dict[str, dict[str, str]] = {
         ),
         "closed_at": "Pass-through of issues.closed_at.",
         "comment_count": (
-            "Count of issue_comments rows matching this issue number, including bot comments. "
-            "May differ from issues.comments if comments were deleted on GitHub after being "
-            "pulled."
+            "Count of conversation_comments rows matching this issue number, including bot "
+            "comments. May differ from issues.comments if comments were deleted on GitHub "
+            "after being pulled."
         ),
         "non_bot_comment_count": (
             "Of comment_count, how many were posted by an account GitHub does not type as Bot. "
@@ -319,12 +319,12 @@ VIEW_COLUMN_DOCS: dict[str, dict[str, str]] = {
             "here."
         ),
         "first_comment_at": (
-            "Earliest created_at among matching issue_comments rows, including bot comments. "
-            "NULL when there are none."
+            "Earliest created_at among matching conversation_comments rows, including bot "
+            "comments. NULL when there are none."
         ),
         "last_comment_at": (
-            "Latest created_at among matching issue_comments rows, including bot comments. "
-            "NULL when there are none."
+            "Latest created_at among matching conversation_comments rows, including bot "
+            "comments. NULL when there are none."
         ),
         "first_non_author_comment_at": (
             "Earliest comment created_at whose author differs from the issue author, including "
@@ -344,44 +344,45 @@ VIEW_COLUMN_DOCS: dict[str, dict[str, str]] = {
             "was opened by a bot."
         ),
     },
-    "pull_activity": {
-        "number": "Pass-through of pulls.number.",
-        "title": "Pass-through of pulls.title.",
+    "pull_request_activity": {
+        "number": "Pass-through of pull_requests.number.",
+        "title": "Pass-through of pull_requests.title.",
         "state": (
-            "Pass-through of pulls.state. Merged pull requests have state 'closed'; use "
+            "Pass-through of pull_requests.state. Merged pull requests have state 'closed'; use "
             "merged_at to distinguish."
         ),
-        "draft": "Pass-through of pulls.draft.",
-        "author": "Login of the pull request opener. Pass-through of pulls.user__login.",
+        "draft": "Pass-through of pull_requests.draft.",
+        "author": "Login of the pull request opener. Pass-through of pull_requests.user__login.",
         "author_type": (
             "GitHub account type of the pull request opener: User, Bot, or Organization. "
-            "Pass-through of pulls.user__type. Machine accounts that are not GitHub Apps are "
-            "typed User."
+            "Pass-through of pull_requests.user__type. Machine accounts that are not GitHub "
+            "Apps are typed User."
         ),
         "labels": (
-            "Sorted list of label names from pulls__labels. Empty list when the pull request "
-            "has no labels."
+            "Sorted list of label names from pull_requests__labels. Empty list when the pull "
+            "request has no labels."
         ),
         "assignees": (
-            "Sorted list of assignee logins from pulls__assignees. Empty list when unassigned. "
-            "Prefer this over the deprecated pulls.assignee__login, which is unreliable when "
-            "there is more than one assignee."
+            "Sorted list of assignee logins from pull_requests__assignees. Empty list when "
+            "unassigned. Prefer this over the deprecated pull_requests.assignee__login, which "
+            "is unreliable when there is more than one assignee."
         ),
         "pending_reviewers": (
             "Sorted list of logins with an outstanding review request, from "
-            "pulls__requested_reviewers. GitHub drops a reviewer from this list once they "
+            "pull_requests__requested_reviewers. GitHub drops a reviewer from this list once they "
             "submit a review, so it reflects unfulfilled requests only, including on closed "
             "pull requests. Empty list when there are none."
         ),
-        "created_at": "Pass-through of pulls.created_at.",
-        "updated_at": "Pass-through of pulls.updated_at.",
-        "closed_at": "Pass-through of pulls.closed_at.",
+        "created_at": "Pass-through of pull_requests.created_at.",
+        "updated_at": "Pass-through of pull_requests.updated_at.",
+        "closed_at": "Pass-through of pull_requests.closed_at.",
         "merged_at": (
-            "Pass-through of pulls.merged_at. NULL when the pull request was not merged."
+            "Pass-through of pull_requests.merged_at. NULL when the pull request was not merged."
         ),
         "comment_count": (
-            "Count of conversation comments: issue_comments rows whose issue_url number matches "
-            "this pull request, including bot comments. Excludes inline review comments."
+            "Count of conversation comments: conversation_comments rows whose issue_url number "
+            "matches this pull request, including bot comments. Excludes inline review "
+            "comments."
         ),
         "non_bot_comment_count": (
             "Of comment_count, how many were posted by an account GitHub does not type as Bot. "
@@ -397,7 +398,7 @@ VIEW_COLUMN_DOCS: dict[str, dict[str, str]] = {
             "NULL when there are none."
         ),
         "review_comment_count": (
-            "Count of inline review comments: pull_comments rows matching this pull request, "
+            "Count of inline review comments: review_comments rows matching this pull request, "
             "including bot comments. Excludes conversation comments."
         ),
         "non_bot_review_comment_count": (

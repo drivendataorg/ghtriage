@@ -5,7 +5,7 @@ import duckdb
 
 from ghtriage.config import get_db_path
 
-_MAIN_TABLES = ("issues", "pulls", "issue_comments", "pull_comments")
+_MAIN_TABLES = ("issues", "pull_requests", "conversation_comments", "review_comments")
 
 
 def _resolve_db_path(cwd: str | Path | None = None) -> Path:

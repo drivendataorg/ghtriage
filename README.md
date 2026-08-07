@@ -90,14 +90,14 @@ The directory manages its own `.gitignore` so that only `config.toml` can be com
 
 ### Derived views
 
-Alongside the raw tables, `pull` creates two views that pre-compute the joins triage questions keep needing. Both are recreated on every pull, and every column carries a description you can read with `ghtriage schema --table <view>`.
+Every `ghtriage pull` also builds two derived views that pre-compute the joins triage questions keep needing. They are rebuilt each time the data refreshes, and every column carries a description you can read with `ghtriage schema --table <view>`.
 
 - **`issue_activity`** — one row per issue, with comment counts and timestamps, labels, and assignees already joined.
-- **`pull_activity`** — one row per pull request, the same plus review-comment facts and pending review requests.
+- **`pull_request_activity`** — one row per pull request, the same plus review-comment facts and pending review requests.
 
 Two things about them are worth knowing:
 
-- **Pull requests have two separate comment channels.** GitHub's issue-comments endpoint carries PR conversation comments, while the pull-comments endpoint carries only inline review comments. `pull_activity` exposes both as separate columns rather than adding them together, because a PR can have a long discussion and no code review, or the reverse.
+- **Pull requests have two separate comment channels.** GitHub's issue-comments endpoint carries conversation comments on both issues and pull requests, while the pull-comments endpoint carries only inline review comments — which is why the tables are named `conversation_comments` and `review_comments` rather than after the endpoints they come from. `pull_request_activity` exposes both as separate columns rather than adding them together, because a PR can have a long discussion and no code review, or the reverse.
 - **Bot activity is split out, not filtered.** `comment_count` counts everything, and `non_bot_comment_count` counts only accounts GitHub does not type as `Bot`. Whether a bot comment means the issue got attention is a judgment, so both numbers are available and neither is imposed. The same pattern applies to review comments and participants.
 
 Everything in these views is recomputable from the raw tables — they are a convenience layer, never a source of truth.

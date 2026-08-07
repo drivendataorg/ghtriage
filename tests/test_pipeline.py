@@ -80,7 +80,12 @@ def test_run_pull_smoke_full_false_calls_pipeline_run_once(tmp_path: Path, monke
     mock_rest_api_source.assert_called_once()
     config = mock_rest_api_source.call_args.args[0]
     resource_names = [resource["name"] for resource in config["resources"]]
-    assert resource_names == ["issues", "pulls", "issue_comments", "pull_comments"]
+    assert resource_names == [
+        "issues",
+        "pull_requests",
+        "conversation_comments",
+        "review_comments",
+    ]
 
     mock_write_meta.assert_called_once_with(db_path=db_path, repo="owner/repo", full=False)
     mock_fetch_and_annotate.assert_called_once_with(db_path)

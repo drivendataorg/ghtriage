@@ -62,7 +62,7 @@ def build_rest_api_source(repo: str, token: str):
                 },
             },
             {
-                "name": "pulls",
+                "name": "pull_requests",
                 "endpoint": {
                     "path": "pulls",
                     "params": {
@@ -76,7 +76,7 @@ def build_rest_api_source(repo: str, token: str):
                 },
             },
             {
-                "name": "issue_comments",
+                "name": "conversation_comments",
                 "endpoint": {
                     "path": "issues/comments",
                     "params": {
@@ -90,7 +90,7 @@ def build_rest_api_source(repo: str, token: str):
                 },
             },
             {
-                "name": "pull_comments",
+                "name": "review_comments",
                 "endpoint": {
                     "path": "pulls/comments",
                     "params": {

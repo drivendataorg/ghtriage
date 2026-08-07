@@ -198,9 +198,9 @@ def status_cwd(tmp_path: Path) -> Path:
     )
     con.execute("INSERT INTO github._ghtriage_meta VALUES ('last_full_pull', 'false')")
     con.execute("CREATE TABLE github.issues (id BIGINT, updated_at TIMESTAMP)")
-    con.execute("CREATE TABLE github.pulls (id BIGINT, updated_at TIMESTAMP)")
-    con.execute("CREATE TABLE github.issue_comments (id BIGINT, updated_at TIMESTAMP)")
-    con.execute("CREATE TABLE github.pull_comments (id BIGINT, updated_at TIMESTAMP)")
+    con.execute("CREATE TABLE github.pull_requests (id BIGINT, updated_at TIMESTAMP)")
+    con.execute("CREATE TABLE github.conversation_comments (id BIGINT, updated_at TIMESTAMP)")
+    con.execute("CREATE TABLE github.review_comments (id BIGINT, updated_at TIMESTAMP)")
     con.close()
 
     return tmp_path

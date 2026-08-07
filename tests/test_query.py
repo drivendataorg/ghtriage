@@ -149,9 +149,9 @@ def status_cwd(tmp_path: Path) -> Path:
     con.execute("CREATE TABLE github.issues (id BIGINT, updated_at TIMESTAMP)")
     con.execute("INSERT INTO github.issues VALUES (1, '2026-02-27 18:03:12')")
     con.execute("INSERT INTO github.issues VALUES (2, '2026-02-26 09:00:00')")
-    con.execute("CREATE TABLE github.pulls (id BIGINT, updated_at TIMESTAMP)")
-    con.execute("CREATE TABLE github.issue_comments (id BIGINT, updated_at TIMESTAMP)")
-    con.execute("CREATE TABLE github.pull_comments (id BIGINT, updated_at TIMESTAMP)")
+    con.execute("CREATE TABLE github.pull_requests (id BIGINT, updated_at TIMESTAMP)")
+    con.execute("CREATE TABLE github.conversation_comments (id BIGINT, updated_at TIMESTAMP)")
+    con.execute("CREATE TABLE github.review_comments (id BIGINT, updated_at TIMESTAMP)")
     con.close()
 
     return tmp_path
@@ -171,13 +171,13 @@ def test_get_status_data_returns_table_stats(status_cwd: Path) -> None:
     status = get_status_data(cwd=status_cwd)
 
     table_names = [name for name, _, _ in status.table_stats]
-    assert table_names == ["issues", "pulls", "issue_comments", "pull_comments"]
+    assert table_names == ["issues", "pull_requests", "conversation_comments", "review_comments"]
 
     issues_stats = next(s for s in status.table_stats if s[0] == "issues")
     assert issues_stats[1] == 2
     assert issues_stats[2] is not None and "2026-02-27" in issues_stats[2]
 
-    pulls_stats = next(s for s in status.table_stats if s[0] == "pulls")
+    pulls_stats = next(s for s in status.table_stats if s[0] == "pull_requests")
     assert pulls_stats[1] == 0
     assert pulls_stats[2] is None
 

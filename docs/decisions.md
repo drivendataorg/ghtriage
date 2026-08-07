@@ -17,7 +17,7 @@ change that line, who would otherwise have to think to look here. What passes bo
 code exposes to callers (shape, names, types) and how a module is put together: reasoning that lives
 across the SQL, the docs dicts, the tests and the README at once.
 
-Findings are not decisions — that roughly half of `issue_comments` rows belong to pull requests is a
+Findings are not decisions — that roughly half of `conversation_comments` rows belong to pull requests is a
 fact, and it belongs in a plan document and in the column comments; that the two comment channels
 are kept separate rather than summed is a decision, and it belongs here.
 
@@ -111,3 +111,13 @@ Rejected: a record-per-column composition layer colocating SQL and docs. Colocat
 actually enforce anything — an edited expression can leave an adjacent doc stale just as easily.
 `test_view_docs_match_view_columns` gives the stronger guarantee, catching drift in both directions,
 and the SQL stays readable and pasteable into `ghtriage query`.
+
+**Tables are named for the domain, not for GitHub's REST paths.**
+Rejected: mirroring the endpoint names, which gave `pulls`, `issue_comments` and `pull_comments`.
+`pulls` collided with the `ghtriage pull` command while having the weakest claim to the word — the
+REST path is the only place GitHub spells it that way, against `pull request` in the docs, `gh pr`
+in the CLI and `pullRequest` in GraphQL. `issue_comments` was worse than a collision: it holds
+conversation comments on issues *and* pull requests, so the name actively misleads. The dlt resource
+`name` and `endpoint.path` are separate, so the tables are renamed without touching the API calls.
+Spelled out rather than abbreviated (`pull_requests`, not `prs`) because nothing else in the schema
+is abbreviated.
