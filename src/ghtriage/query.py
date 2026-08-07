@@ -5,7 +5,7 @@ import duckdb
 
 from ghtriage.config import get_db_path
 
-_MAIN_TABLES = ("issues", "pulls", "issue_comments", "pull_comments")
+_MAIN_TABLES = ("issues", "pull_requests", "conversation_comments", "review_comments")
 
 
 def _resolve_db_path(cwd: str | Path | None = None) -> Path:
@@ -84,11 +84,18 @@ def get_table_columns(
 
 
 def get_table_descriptions(cwd: str | Path | None = None) -> dict[str, str]:
-    """Return {table_name: description} for tables that have a COMMENT ON TABLE set."""
+    """Return {name: description} for tables and views that have a comment set.
+
+    duckdb_tables() excludes views, so derived views are unioned in explicitly.
+    """
     db_path = _resolve_db_path(cwd=cwd)
     with duckdb.connect(str(db_path), read_only=True) as conn:
         rows = conn.execute(
-            "SELECT table_name, comment FROM duckdb_tables() WHERE schema_name = 'github'"
+            """
+            SELECT table_name, comment FROM duckdb_tables() WHERE schema_name = 'github'
+            UNION ALL
+            SELECT view_name, comment FROM duckdb_views() WHERE schema_name = 'github'
+            """
         ).fetchall()
     return {name: comment for name, comment in rows if comment}
 

@@ -14,6 +14,12 @@ This project uses uv for Python environment management and Just as a task runner
 - Linting: `just lint` (variadic)
 - Auto-formatting: `just format` (variadic)
 
+## Design decisions
+
+- Non-obvious choices are recorded in [`docs/decisions.md`](/docs/decisions.md), each with the alternative that was rejected.
+- Read it before changing behavior an entry covers. Several choices look arbitrary without the reasoning, and undoing them reintroduces problems that are already known.
+- Add an entry when you make a decision a future reader might reasonably undo. That file's header states what qualifies and the format to use.
+
 ## Development and testing
 
 - Use red/green test-driven development

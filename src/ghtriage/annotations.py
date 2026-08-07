@@ -12,9 +12,9 @@ OPENAPI_FETCH_TIMEOUT_SECONDS = 30
 # Maps DuckDB table name → OpenAPI component schema name
 TABLE_SCHEMAS = {
     "issues": "issue",
-    "pulls": "pull-request-simple",
-    "issue_comments": "issue-comment",
-    "pull_comments": "pull-request-review-comment",
+    "pull_requests": "pull-request-simple",
+    "conversation_comments": "issue-comment",
+    "review_comments": "pull-request-review-comment",
 }
 
 

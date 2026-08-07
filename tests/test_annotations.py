@@ -202,9 +202,14 @@ def test_extract_descriptions_multi_level_ref() -> None:
 
 def test_build_column_descriptions_structure(minimal_spec: dict) -> None:
     result = build_column_descriptions(minimal_spec)
-    assert set(result.keys()) == {"issues", "pulls", "issue_comments", "pull_comments"}
+    assert set(result.keys()) == {
+        "issues",
+        "pull_requests",
+        "conversation_comments",
+        "review_comments",
+    }
     assert "number" in result["issues"]
-    assert "draft" in result["pulls"]
+    assert "draft" in result["pull_requests"]
 
 
 def test_build_column_descriptions_flattens_inline_nested_object() -> None:
@@ -233,9 +238,14 @@ def test_build_column_descriptions_flattens_inline_nested_object() -> None:
 
 def test_build_table_descriptions_structure(minimal_spec: dict) -> None:
     result = build_table_descriptions(minimal_spec)
-    assert set(result.keys()) == {"issues", "pulls", "issue_comments", "pull_comments"}
+    assert set(result.keys()) == {
+        "issues",
+        "pull_requests",
+        "conversation_comments",
+        "review_comments",
+    }
     assert "issue" in result["issues"].lower()
-    assert "pull request" in result["pulls"].lower()
+    assert "pull request" in result["pull_requests"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +298,8 @@ def test_annotate_database_escapes_single_quotes(annotated_db: Path) -> None:
 
 def test_annotate_database_skips_missing_table(annotated_db: Path) -> None:
     """Tables absent from the database are silently skipped."""
-    column_descs = {"pulls": {"title": "PR title"}}
-    table_descs = {"pulls": "Pull requests."}
+    column_descs = {"pull_requests": {"title": "PR title"}}
+    table_descs = {"pull_requests": "Pull requests."}
     # Should not raise even though 'pulls' table does not exist
     annotate_database(annotated_db, table_descs, column_descs)
 

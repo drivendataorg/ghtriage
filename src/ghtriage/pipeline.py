@@ -9,6 +9,7 @@ import duckdb
 
 from ghtriage.annotations import fetch_and_annotate
 from ghtriage.config import get_db_path, get_pipelines_dir
+from ghtriage.views import create_views
 
 
 def _split_repo(repo: str) -> tuple[str, str]:
@@ -61,7 +62,7 @@ def build_rest_api_source(repo: str, token: str):
                 },
             },
             {
-                "name": "pulls",
+                "name": "pull_requests",
                 "endpoint": {
                     "path": "pulls",
                     "params": {
@@ -75,7 +76,7 @@ def build_rest_api_source(repo: str, token: str):
                 },
             },
             {
-                "name": "issue_comments",
+                "name": "conversation_comments",
                 "endpoint": {
                     "path": "issues/comments",
                     "params": {
@@ -89,7 +90,7 @@ def build_rest_api_source(repo: str, token: str):
                 },
             },
             {
-                "name": "pull_comments",
+                "name": "review_comments",
                 "endpoint": {
                     "path": "pulls/comments",
                     "params": {
@@ -169,5 +170,6 @@ def run_pull(
         _write_meta(db_path=db_path, repo=repo, full=full)
     except Exception as exc:
         meta_error = exc
+    create_views(db_path)
     fetch_and_annotate(db_path)
     return load_info, meta_error
