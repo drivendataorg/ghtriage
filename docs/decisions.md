@@ -60,7 +60,7 @@ moving to the code. Relocate it to a comment in the same change.
 ## 2026-08-06 — Derived activity views
 
 From [#11](https://github.com/jayqi/ghtriage/issues/11) — see
-[the plan](plans/archive/2026-08-06-derived-activity-views.md) for the full reasoning and the data
+[the plan](/docs/plans/archive/2026-08-06-derived-activity-views.md) for the full reasoning and the data
 behind it.
 
 **Pull request conversation and review comments stay separate.**
