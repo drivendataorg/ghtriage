@@ -109,8 +109,10 @@ against another. Only a missing *base* table skips a view.
 **Views are plain SQL templates with format slots; column docs live in a separate dict.**
 Rejected: a record-per-column composition layer colocating SQL and docs. Colocation does not
 actually enforce anything — an edited expression can leave an adjacent doc stale just as easily.
-`test_view_docs_match_view_columns` gives the stronger guarantee, catching drift in both directions,
-and the SQL stays readable and pasteable into `ghtriage query`.
+`test_view_docs_match_view_columns` pins the weaker but enforceable half — every column has exactly
+one doc and no doc outlives its column — and the SQL stays readable and pasteable into
+`ghtriage query`. What neither colocation nor that test can catch is a doc whose *text* drifts from
+its expression; that needs review, and it has already happened once.
 
 **Tables are named for the domain, not for GitHub's REST paths.**
 Rejected: mirroring the endpoint names, which gave `pulls`, `issue_comments` and `pull_comments`.

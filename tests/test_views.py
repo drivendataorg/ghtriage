@@ -33,7 +33,7 @@ from ghtriage.views import EMPTY, VIEW_COLUMN_DOCS, VIEW_DOCS, VIEWS, create_vie
 
 
 def _api(kind: str, number: int) -> str:
-    return f"https://api.github.com/repos/o/r/{kind}/{number}"
+    return f"https://api.github.com/repos/someorg/somerepo/{kind}/{number}"
 
 
 def _create_schema(con: duckdb.DuckDBPyConnection) -> None:
@@ -1109,7 +1109,16 @@ def test_create_views_tolerates_unparseable_comment_url(tmp_path: Path) -> None:
     )
     con.executemany(
         "INSERT INTO github.conversation_comments VALUES (?,?,?,?,?,?)",
-        [(1, "https://api.github.com/repos/o/r/issues/not-a-number", "bob", "User", _d(2), _d(2))],
+        [
+            (
+                1,
+                "https://api.github.com/repos/someorg/somerepo/issues/not-a-number",
+                "bob",
+                "User",
+                _d(2),
+                _d(2),
+            )
+        ],
     )
     con.close()
 
@@ -1148,10 +1157,100 @@ def test_create_views_warns_when_base_table_is_absent(
     create_views(path)
 
     err = capsys.readouterr().err
-    assert "pull_request_activity" in err and "pull_requests" in err
+    # Must be the deliberate skip, not an unhandled binder error -- that error text
+    # also contains both names, so asserting on those alone proves nothing.
+    assert "Note: skipping view pull_request_activity" in err
+    assert "Warning" not in err
     assert "issue_activity" in columns_present(path)
     assert "pull_request_activity" not in columns_present(path)
 
 
 def columns_present(db_path: Path) -> set[str]:
     return {r[0] for r in rows(db_path, "SELECT view_name FROM duckdb_views()")}
+
+
+def test_create_views_join_key_ignores_digits_in_the_repo_name(tmp_path: Path) -> None:
+    """A repository can itself be named with digits, e.g. github.com/someorg/2048.
+
+    The comment URL is then .../repos/someorg/2048/issues/7, where an unanchored
+    `/(\\d+)` captures the repo name instead of the issue number and silently
+    mis-keys every comment.
+    """
+    path = tmp_path / "digitrepo.duckdb"
+    con = duckdb.connect(str(path))
+    _create_schema(con)
+    con.executemany(
+        "INSERT INTO github.issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (
+                7,
+                "in a repo named 2048",
+                "open",
+                None,
+                "alice",
+                "User",
+                _d(1),
+                _d(1),
+                None,
+                1,
+                None,
+                "i7",
+            )
+        ],
+    )
+    con.executemany(
+        "INSERT INTO github.conversation_comments VALUES (?,?,?,?,?,?)",
+        [(1, "https://api.github.com/repos/someorg/2048/issues/7", "bob", "User", _d(2), _d(2))],
+    )
+    con.close()
+
+    create_views(path)
+
+    assert rows(path, "SELECT number, comment_count FROM github.issue_activity") == [(7, 1)]
+
+
+def test_create_views_pull_request_review_timestamps(db: Path) -> None:
+    """The PR view's own timestamp columns, which nothing else asserts on."""
+    create_views(db)
+
+    assert rows(
+        db,
+        "SELECT number, first_review_comment_at, last_review_comment_at, "
+        "first_comment_at, last_comment_at FROM github.pull_request_activity ORDER BY number",
+    ) == [
+        (10, None, None, _d(3, 2), _d(3, 2)),
+        (11, _d(5, 2), _d(6, 2), _d(5, 2), _d(5, 2)),
+        (12, None, None, None, None),
+        (13, None, None, None, None),
+    ]
+
+
+def test_create_views_pull_request_non_bot_counts_treat_null_user_type_as_non_bot(
+    tmp_path: Path,
+) -> None:
+    """The same NULL-safety the issue view has, on all three PR-side filters."""
+    path = tmp_path / "prnulltype.duckdb"
+    con = duckdb.connect(str(path))
+    _create_schema(con)
+    con.executemany(
+        "INSERT INTO github.pull_requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(1, "pr", "open", False, "alice", "User", _d(1), _d(1), None, None, None, "p1")],
+    )
+    con.executemany(
+        "INSERT INTO github.conversation_comments VALUES (?,?,?,?,?,?)",
+        [(1, _api("issues", 1), "ghost", None, _d(2), _d(2))],
+    )
+    con.executemany(
+        "INSERT INTO github.review_comments VALUES (?,?,?,?,?,?)",
+        [(2, _api("pulls", 1), "phantom", None, _d(3), _d(3))],
+    )
+    con.close()
+
+    create_views(path)
+
+    assert rows(
+        path,
+        "SELECT comment_count, non_bot_comment_count, review_comment_count, "
+        "non_bot_review_comment_count, participant_count, non_bot_participant_count "
+        "FROM github.pull_request_activity",
+    ) == [(1, 1, 1, 1, 3, 3)]
