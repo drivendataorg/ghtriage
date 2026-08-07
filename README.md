@@ -88,15 +88,30 @@ ghtriage query "SELECT number, title FROM issue_activity WHERE state = 'open' AN
 
 The directory manages its own `.gitignore` so that only `config.toml` can be committed to version control; the token, database, and pull state are automatically excluded.
 
+### What gets pulled
+
+| Table | Contents |
+|---|---|
+| `issues` | Issues only. Pull requests are filtered out, though GitHub's endpoint returns both. |
+| `pull_requests` | Pull requests. |
+| `conversation_comments` | Comments on the main thread of the issue or pull request. |
+| `review_comments` | Inline comments on a pull request's diff. |
+
+Nested arrays become child tables named with a double-underscore, e.g., `issues__labels`, and can be joined to their parent on `_dlt_parent_id = _dlt_id`.
+
+If any entity has zero records, then no table will be created rather than an empty. Run `ghtriage schema` for the authoritative list of what your
+database actually holds.
+
 ### Derived views
 
-Every `ghtriage pull` also builds two derived views that pre-compute the joins triage questions keep needing. They are rebuilt each time the data refreshes, and every column carries a description you can read with `ghtriage schema --table <view>`.
+Every `ghtriage pull` also builds derived views that pre-compute facts and joins that are useful for triaging.
 
 - **`issue_activity`** — one row per issue, with comment counts and timestamps, labels, and assignees already joined.
 - **`pull_request_activity`** — one row per pull request, the same plus review-comment facts and pending review requests.
 
-Two things about them are worth knowing:
+They are rebuilt each time the data refreshes, and every column carries a description you can read with `ghtriage schema --table <view>`. Details about them worth knowing:
 
+- **A repository with zero issues or zero pull requests will not get the respective view.** A view is built from a table, and there is no table until at least one record of that kind has been pulled. Query `ghtriage schema` to see which views exist rather than assuming both do.
 - **Pull requests have two separate comment channels.** GitHub's issue-comments endpoint carries conversation comments on both issues and pull requests, while the pull-comments endpoint carries only inline review comments — which is why the tables are named `conversation_comments` and `review_comments` rather than after the endpoints they come from. `pull_request_activity` exposes both as separate columns rather than adding them together, because a PR can have a long discussion and no code review, or the reverse.
 - **Bot activity is split out, not filtered.** `comment_count` counts everything, and `non_bot_comment_count` counts only accounts GitHub does not type as `Bot`. Whether a bot comment means the issue got attention is a judgment, so both numbers are available and neither is imposed. The same pattern applies to review comments and participants.
 
