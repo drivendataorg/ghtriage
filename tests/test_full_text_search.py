@@ -115,7 +115,7 @@ def _search(db_path: Path, table: str, query: str) -> list[tuple]:
     """Ranked (number, score) matches, exactly as the documented query form works."""
     with duckdb.connect(str(db_path), read_only=True) as con:
         return con.execute(
-            f"SELECT number, score FROM ("  # noqa: S608
+            f"SELECT number, score FROM ("
             f"  SELECT number, {index_schema(table)}.match_bm25(id, ?) AS score"
             f"  FROM github.{table}"
             f") WHERE score IS NOT NULL ORDER BY score DESC",
@@ -152,7 +152,7 @@ def test_indexed_fields_match_declared_columns(db: Path) -> None:
             indexed = [
                 row[0]
                 for row in con.execute(
-                    f"SELECT field FROM {index_schema(table)}.fields ORDER BY fieldid"  # noqa: S608
+                    f"SELECT field FROM {index_schema(table)}.fields ORDER BY fieldid"
                 ).fetchall()
             ]
             assert indexed == list(columns), table
@@ -168,11 +168,9 @@ def test_declared_key_column_matches_index_documents(db: Path) -> None:
 
     with duckdb.connect(str(db), read_only=True) as con:
         for table, (key_column, _) in INDEXES.items():
-            keys = con.execute(
-                f"SELECT {key_column} FROM github.{table} ORDER BY 1"  # noqa: S608
-            ).fetchall()
+            keys = con.execute(f"SELECT {key_column} FROM github.{table} ORDER BY 1").fetchall()
             documents = con.execute(
-                f"SELECT name FROM {index_schema(table)}.docs ORDER BY 1"  # noqa: S608
+                f"SELECT name FROM {index_schema(table)}.docs ORDER BY 1"
             ).fetchall()
             assert keys == documents, table
 
@@ -253,9 +251,7 @@ def test_is_idempotent(db: Path) -> None:
             documents = [
                 (
                     table,
-                    con.execute(
-                        f"SELECT count(*) FROM {index_schema(table)}.docs"  # noqa: S608
-                    ).fetchone()[0],
+                    con.execute(f"SELECT count(*) FROM {index_schema(table)}.docs").fetchone()[0],
                 )
                 for table in INDEXES
             ]
@@ -361,16 +357,6 @@ def test_swallows_errors_from_one_table(
     assert "index build exploded" in capsys.readouterr().err
 
 
-def test_swallows_errors_when_database_is_unusable(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
-    missing = tmp_path / "nope" / "missing.duckdb"
-
-    create_search_indexes(missing)
-
-    assert "Warning" in capsys.readouterr().err
-
-
 def test_skipping_a_rebuild_drops_the_previous_index(db: Path) -> None:
     """A skipped build must leave no index, not yesterday's.
 
@@ -442,6 +428,30 @@ def test_skipping_a_vanished_key_column_drops_the_previous_index(db: Path) -> No
     create_search_indexes(db)
 
     _drop(db, "ALTER TABLE github.issues DROP COLUMN id")
+    create_search_indexes(db)
+
+    assert index_schema("issues") not in _schemas(db)
+
+
+def test_a_failed_rebuild_drops_the_previous_index(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The error path needs the same drop the skip paths have.
+
+    Without it an index that raised mid-rebuild keeps scoring the previous pull's text,
+    behind a document count that looks entirely plausible in `ghtriage schema`.
+    """
+    create_search_indexes(db)
+    assert index_schema("issues") in _schemas(db)
+
+    real_check = full_text_search._key_is_usable
+
+    def explode_for_issues(con, table, key_column):
+        if table == "issues":
+            raise RuntimeError("transient")
+        return real_check(con, table, key_column)
+
+    monkeypatch.setattr(full_text_search, "_key_is_usable", explode_for_issues)
     create_search_indexes(db)
 
     assert index_schema("issues") not in _schemas(db)

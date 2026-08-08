@@ -12,6 +12,7 @@ from ghtriage.derived import (
     DERIVED_DOCS,
     EMPTY,
     create_derived,
+    drop_derived_tables,
 )
 
 # ---------------------------------------------------------------------------
@@ -1190,22 +1191,6 @@ def test_create_derived_tolerates_unparseable_comment_url(tmp_path: Path) -> Non
     assert rows(path, "SELECT number, comment_count FROM github.issue_activity") == [(1, 0)]
 
 
-def test_create_derived_warns_and_survives_an_unusable_database(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
-    """A pull must not fail because the view step could not open the database.
-
-    create_views runs before fetch_and_annotate, so raising here would also skip
-    annotation -- a regression against the behaviour without views.
-    """
-    path = tmp_path / "corrupt.duckdb"
-    path.write_bytes(b"this is not a duckdb file" * 100)
-
-    create_derived(path)  # must not raise
-
-    assert "derived object creation failed" in capsys.readouterr().err
-
-
 def test_create_derived_warns_when_base_table_is_absent(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
@@ -1493,3 +1478,52 @@ def test_create_derived_keeps_a_view_it_can_no_longer_build(db: Path) -> None:
         create_derived(db)
 
     assert rows(db, "SELECT count(*) FROM github.issue_activity") == [(7,)]
+
+
+def test_drop_derived_tables_removes_tables_but_leaves_views(db: Path) -> None:
+    """For a pull whose derive step failed wholesale: whatever survived is of unknown age.
+
+    Views are spared for the same reason `_drop_if_stale` spares them -- a view holds a
+    query, so it answers from current data whatever its age.
+    """
+    create_derived(db)
+
+    drop_derived_tables(db)
+
+    assert not table_exists(db, "issue_threads")
+    assert not table_exists(db, "pull_request_threads")
+    assert rows(db, "SELECT count(*) FROM github.issue_activity") == [(7,)]
+
+
+def test_drop_derived_tables_is_a_no_op_when_they_were_never_built(tmp_path: Path) -> None:
+    path = tmp_path / "empty.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE SCHEMA github")
+    con.close()
+
+    drop_derived_tables(path)  # must not raise
+
+
+def test_create_derived_survives_a_probe_failure_on_one_object(
+    db: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """A catalog probe that fails must cost only its own object.
+
+    It used to sit outside the per-object guard, so it propagated out of create_derived
+    after other objects had already been rebuilt -- leaving the caller unable to tell
+    which ones were current, and forcing it to drop them all.
+    """
+    real_probe = derived_module.present_columns
+
+    def explode_for_issues(con, table):
+        if table == "issues":
+            raise RuntimeError("probe failed")
+        return real_probe(con, table)
+
+    monkeypatch.setattr(derived_module, "present_columns", explode_for_issues)
+
+    create_derived(db)  # must not raise
+
+    assert table_exists(db, "pull_request_threads")
+    assert not table_exists(db, "issue_threads")
+    assert "probe failed" in capsys.readouterr().err

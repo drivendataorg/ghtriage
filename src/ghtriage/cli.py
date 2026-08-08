@@ -60,11 +60,11 @@ def _run_pull(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    load_info, meta_error = run_pull(repo=repo, token=token, full=args.full)
+    load_info, warnings = run_pull(repo=repo, token=token, full=args.full)
     print(f"Pull completed for {repo}")
     print(load_info)
-    if meta_error is not None:
-        print(f"Warning: metadata write failed: {meta_error}", file=sys.stderr)
+    for warning in warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
     return 0
 
 

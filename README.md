@@ -27,7 +27,7 @@ Or run it without installing:
 uvx --from git+https://github.com/jayqi/ghtriage ghtriage --help
 ```
 
-Any tool that installs from a Git URL (`pip`, `pipx`) also works. Requires Python 3.13+.
+Any tool that installs from a Git URL (`pip`, `pipx`) also works. Requires Python 3.10+.
 
 ## Usage
 
@@ -106,7 +106,7 @@ Some behaviors to be aware of:
 
 Nested arrays become child tables named with a double-underscore, e.g., `issues__labels`, and can be joined to their parent on `_dlt_parent_id = _dlt_id`.
 
-If any entity has zero records, then no table will be created rather than an empty. Run `ghtriage schema` for the authoritative list of what your
+If any entity has zero records, no table is created rather than an empty one. Run `ghtriage schema` for the authoritative list of what your
 database actually holds.
 
 ### Derived tables and views

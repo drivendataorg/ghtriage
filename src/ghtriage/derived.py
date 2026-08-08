@@ -604,28 +604,32 @@ def render_slots(sql: str, usable: set[str]) -> str:
 def create_derived(db_path: Path) -> None:
     """Create or replace every derived view and table in the `github` schema.
 
-    Best-effort, and deliberately guarded at the outermost level: the connection and
-    the schema probe are inside the try too, so a locked or unreadable database warns
-    rather than failing the pull. This runs before indexing and annotation, so raising
-    here would skip both.
+    Raises if the database cannot be opened or probed. An individual object that cannot
+    be built is warned about and dropped, leaving the rest intact.
     """
-    try:
-        with duckdb.connect(str(db_path)) as con:
-            present = present_tables(con)
-            for name in DERIVED:
-                _create_one(con, name, present)
-    except Exception as exc:
-        print(f"Warning: derived object creation failed: {exc}", file=sys.stderr)
+    with duckdb.connect(str(db_path)) as con:
+        present = present_tables(con)
+        for name in DERIVED:
+            _create_one(con, name, present)
+
+
+DERIVED_TABLES: tuple[str, ...] = tuple(
+    name for name, spec in DERIVED.items() if spec.kind == "TABLE"
+)
+
+
+def drop_derived_tables(db_path: Path) -> None:
+    """Drop every derived table. Views are left in place."""
+    with duckdb.connect(str(db_path)) as con:
+        for name in DERIVED_TABLES:
+            con.execute(f"DROP TABLE IF EXISTS github.{name}")
 
 
 def _drop_if_stale(con: duckdb.DuckDBPyConnection, name: str) -> None:
-    """Remove a derived table that could not be rebuilt.
+    """Drop `name` if it is a table, leaving views in place.
 
-    Only tables. A table that is not rebuilt still holds the previous pull's rows, and
-    `full_text_search` would index that stale text over a document count that looks
-    entirely plausible in `ghtriage schema`. A view holds a query rather than rows, so a
-    failed replace leaves current data behind an older definition -- milder, and dropping
-    it would turn a transient failure into a vanished view.
+    A table that was not rebuilt still holds the previous pull's rows. A view holds a
+    query, so it answers from current data whatever age its definition is.
     """
     if DERIVED[name].kind == "TABLE":
         con.execute(f"DROP TABLE IF EXISTS github.{name}")
@@ -634,21 +638,25 @@ def _drop_if_stale(con: duckdb.DuckDBPyConnection, name: str) -> None:
 def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) -> None:
     spec = DERIVED[name]
     kind = spec.kind.lower()
-    if spec.base not in present:
-        print(
-            f"Note: skipping {kind} {name}; source table {spec.base} is not present yet.",
-            file=sys.stderr,
-        )
-        _drop_if_stale(con, name)
-        return
-    if missing := sorted(set(spec.requires) - present_columns(con, spec.base)):
-        print(
-            f"Note: skipping {kind} {name}; {spec.base} has no {', '.join(missing)} column yet.",
-            file=sys.stderr,
-        )
-        _drop_if_stale(con, name)
-        return
+    # Everything is inside the guard, catalog probes included: an object that cannot be
+    # built must cost only itself. What escapes here escapes `create_derived` too, and
+    # the caller can then only assume every derived table is of unknown age.
     try:
+        if spec.base not in present:
+            print(
+                f"Note: skipping {kind} {name}; source table {spec.base} is not present yet.",
+                file=sys.stderr,
+            )
+            _drop_if_stale(con, name)
+            return
+        if missing := sorted(set(spec.requires) - present_columns(con, spec.base)):
+            print(
+                f"Note: skipping {kind} {name}; "
+                f"{spec.base} has no {', '.join(missing)} column yet.",
+                file=sys.stderr,
+            )
+            _drop_if_stale(con, name)
+            return
         usable = {
             slot
             for slot in EMPTY

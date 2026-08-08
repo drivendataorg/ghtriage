@@ -134,12 +134,10 @@ def get_full_text_indexes(cwd: str | Path | None = None) -> list[FullTextIndex]:
                 columns = [
                     row[0]
                     for row in conn.execute(
-                        f'SELECT field FROM "{schema}".fields ORDER BY fieldid'  # noqa: S608
+                        f'SELECT field FROM "{schema}".fields ORDER BY fieldid'
                     ).fetchall()
                 ]
-                count = conn.execute(
-                    f'SELECT count(*) FROM "{schema}".docs'  # noqa: S608
-                ).fetchone()[0]
+                count = conn.execute(f'SELECT count(*) FROM "{schema}".docs').fetchone()[0]
             except Exception:
                 # An index whose catalog tables cannot be read is not reportable, but it
                 # must not take the rest of `ghtriage schema` down with it.
@@ -188,7 +186,7 @@ def get_status_data(cwd: str | Path | None = None) -> StatusData:
         for table in _MAIN_TABLES:
             try:
                 row = conn.execute(
-                    f"SELECT COUNT(*), MAX(updated_at) FROM github.{table}"  # noqa: S608
+                    f"SELECT COUNT(*), MAX(updated_at) FROM github.{table}"
                 ).fetchone()
                 count = row[0] or 0
                 max_updated_at = str(row[1])[:19] if row[1] is not None else None

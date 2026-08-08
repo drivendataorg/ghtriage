@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import duckdb
+import pytest
 
 from ghtriage.pipeline import _write_meta, run_pull
 
@@ -66,10 +67,10 @@ def test_run_pull_smoke_full_false_calls_pipeline_run_once(tmp_path: Path, monke
         call_order,
     ) = _install_pipeline_mocks(monkeypatch)
 
-    load_info, meta_error = run_pull(repo="owner/repo", token="tok", full=False, cwd=tmp_path)
+    load_info, warnings = run_pull(repo="owner/repo", token="tok", full=False, cwd=tmp_path)
 
     assert load_info is sentinel_run_result
-    assert meta_error is None
+    assert warnings == []
     mock_pipeline_obj.run.assert_called_once_with(sentinel_source)
 
     db_path = tmp_path / ".ghtriage" / "ghtriage.duckdb"
@@ -122,10 +123,10 @@ def test_run_pull_full_true_removes_existing_state_then_runs(tmp_path: Path, mon
     old_pipeline_file.write_text("old", encoding="utf-8")
     old_db_path.write_text("old", encoding="utf-8")
 
-    load_info, meta_error = run_pull(repo="owner/repo", token="tok", full=True, cwd=tmp_path)
+    load_info, warnings = run_pull(repo="owner/repo", token="tok", full=True, cwd=tmp_path)
 
     assert load_info is sentinel_run_result
-    assert meta_error is None
+    assert warnings == []
     assert not old_db_path.exists()
     assert not old_pipeline_file.exists()
     mock_pipeline_obj.run.assert_called_once_with(sentinel_source)
@@ -147,10 +148,10 @@ def test_run_pull_full_true_handles_missing_state(tmp_path: Path, monkeypatch) -
         _call_order,
     ) = _install_pipeline_mocks(monkeypatch)
 
-    load_info, meta_error = run_pull(repo="owner/repo", token="tok", full=True, cwd=tmp_path)
+    load_info, warnings = run_pull(repo="owner/repo", token="tok", full=True, cwd=tmp_path)
 
     assert load_info is sentinel_run_result
-    assert meta_error is None
+    assert warnings == []
     mock_pipeline_obj.run.assert_called_once_with(sentinel_source)
 
 
@@ -282,3 +283,61 @@ def test_run_pull_builds_search_indexes_between_derived_and_annotation(
     db_path = tmp_path / ".ghtriage" / "ghtriage.duckdb"
     mock_create_search_indexes.assert_called_once_with(db_path)
     assert call_order == ["create_derived", "create_search_indexes", "fetch_and_annotate"]
+
+
+# ---------------------------------------------------------------------------
+# A pull survives every decorating step failing
+# ---------------------------------------------------------------------------
+#
+# The build steps raise; whether that costs the pull is decided here, which is why
+# these live with the orchestrator rather than with the modules that raise.
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("ghtriage.pipeline._write_meta", "metadata write failed"),
+        ("ghtriage.pipeline.create_derived", "derived objects failed"),
+        ("ghtriage.pipeline.create_search_indexes", "full-text indexes failed"),
+        ("ghtriage.pipeline.fetch_and_annotate", "schema annotation failed"),
+    ],
+)
+def test_run_pull_survives_and_reports_a_failed_step(
+    tmp_path: Path, monkeypatch, target: str, expected: str
+) -> None:
+    _install_pipeline_mocks(monkeypatch)
+    monkeypatch.setattr(target, Mock(side_effect=RuntimeError("boom")))
+    monkeypatch.chdir(tmp_path)
+
+    _load_info, warnings = run_pull(repo="owner/repo", token="t", full=False)
+
+    assert [w for w in warnings if w.startswith(expected)]
+    assert "boom" in warnings[0]
+
+
+def test_run_pull_drops_derived_tables_when_the_derive_step_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Left in place, they would be indexed as though they were current."""
+    _install_pipeline_mocks(monkeypatch)
+    monkeypatch.setattr("ghtriage.pipeline.create_derived", Mock(side_effect=RuntimeError("boom")))
+    mock_drop = Mock()
+    monkeypatch.setattr("ghtriage.pipeline.drop_derived_tables", mock_drop)
+    monkeypatch.chdir(tmp_path)
+
+    run_pull(repo="owner/repo", token="t", full=False)
+
+    mock_drop.assert_called_once_with(tmp_path / ".ghtriage" / "ghtriage.duckdb")
+
+
+def test_run_pull_does_not_drop_derived_tables_when_the_derive_step_succeeds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _install_pipeline_mocks(monkeypatch)
+    mock_drop = Mock()
+    monkeypatch.setattr("ghtriage.pipeline.drop_derived_tables", mock_drop)
+    monkeypatch.chdir(tmp_path)
+
+    run_pull(repo="owner/repo", token="t", full=False)
+
+    mock_drop.assert_not_called()

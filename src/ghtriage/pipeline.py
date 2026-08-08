@@ -9,7 +9,7 @@ import duckdb
 
 from ghtriage.annotations import fetch_and_annotate
 from ghtriage.config import get_db_path, get_pipelines_dir
-from ghtriage.derived import create_derived
+from ghtriage.derived import create_derived, drop_derived_tables
 from ghtriage.full_text_search import create_search_indexes
 
 
@@ -166,12 +166,37 @@ def run_pull(
     pipeline = create_pipeline(cwd=cwd)
     source = build_rest_api_source(repo=repo, token=token)
     load_info = pipeline.run(source)
-    meta_error: Exception | None = None
+
+    # The load is what a pull is for; everything below decorates it, and any of it
+    # failing still leaves the raw tables usable. Each step is attempted, reported and
+    # survived -- this is the only place that judgment is made.
+    warnings: list[str] = []
+
     try:
         _write_meta(db_path=db_path, repo=repo, full=full)
     except Exception as exc:
-        meta_error = exc
-    create_derived(db_path)
-    create_search_indexes(db_path)
-    fetch_and_annotate(db_path)
-    return load_info, meta_error
+        warnings.append(f"metadata write failed: {exc}")
+
+    try:
+        create_derived(db_path)
+    except Exception as exc:
+        warnings.append(f"derived objects failed: {exc}")
+        # Whatever survived from an earlier pull is now of unknown age. Removing it makes
+        # the next search fail loudly rather than quietly answer from stale text, and
+        # leaves the index step nothing to index.
+        try:
+            drop_derived_tables(db_path)
+        except Exception as exc:
+            warnings.append(f"dropping stale derived tables failed: {exc}")
+
+    try:
+        create_search_indexes(db_path)
+    except Exception as exc:
+        warnings.append(f"full-text indexes failed: {exc}")
+
+    try:
+        fetch_and_annotate(db_path)
+    except Exception as exc:
+        warnings.append(f"schema annotation failed: {exc}")
+
+    return load_info, warnings

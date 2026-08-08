@@ -169,9 +169,11 @@ mechanism the rest of the project relies on cannot document them. The raw syntax
 `ghtriage schema` instead.
 
 **An explicit `duckdb>=1.2` pin.**
-Rejected: continuing to inherit duckdb through `dlt[duckdb]`, whose floor is `duckdb>=0.9`. The
-project has needed ≥0.10.2 since `COMMENT ON` arrived in #11, and the full-text behavior here is
-verified from 1.2 onward. Inheriting a floor nothing tests is how a dependency range ends up lying.
+Rejected: continuing to inherit duckdb through `dlt[duckdb]`, whose floor is `duckdb>=0.9` — a
+floor under which `COMMENT ON` does not exist, so the project has been misdeclaring its
+requirements since #11. 1.2 is where the full-text behavior here was checked by hand. Note that CI
+has no duckdb matrix: it resolves the lockfile, so only the pinned version is ever exercised and
+the floor is asserted rather than tested. Worth a floor job if the range ever widens.
 
 ## 2026-08-08 — Derived objects in one module
 
@@ -189,8 +191,18 @@ are one kind of thing to a user and now to the code: one registry, one build pat
 
 **`full_text_search` depends on `derived` having run, and that is not treated as a hazard.**
 Rejected: defending the ordering with structure. Materialize, then index is how indexing works
-everywhere; a maintainer arrives knowing it, and violating it cannot go unnoticed — the pull warns,
-and because both modules drop what they cannot rebuild, every search then errors on a missing
-schema rather than quietly scoring the previous pull's text. `run_pull` pins the order, a test pins
+everywhere; a maintainer arrives knowing it. The mechanism that makes a mis-ordering survivable
+rather than silent is that nothing is left behind it cannot vouch for: a derived table that was not
+rebuilt this pull is dropped, and an index whose table is absent is dropped in turn, so a search
+errors on a missing schema instead of scoring the previous pull's text. `run_pull` pins the order, a test pins
 `run_pull`, and `create_search_indexes` states the precondition. See the 2026-08-07 entry "Thread
 tables are materialized, not views" for why they are tables at all.
+
+**Every step after the load is attempted, reported, and survived, and that decision lives in
+`run_pull`.**
+Rejected: each builder guarding itself. A module swallowing its own failures is deciding what a
+pull is worth, which is the orchestrator's call — and `create_derived`'s guard used to justify
+itself in terms of what ran *after* it, which is a module reasoning about its callers. The builders
+now raise; `run_pull` collects a warning per failed step and exits 0, because the raw tables landed
+and they are what a pull is for. Per-object handling stays inside the builders: skipping an object
+with no source table yet is not a failure, and a young repository legitimately skips six.

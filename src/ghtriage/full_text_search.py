@@ -6,11 +6,11 @@ for the schema holding the indexed table, so ours are all `fts_github_<table>` -
 the `fts_main_<table>` that DuckDB's documentation shows.
 
 This module only indexes. `derived` builds the thread tables two of these indexes read
-from, and has to run first -- materialize, then index.
+from, and runs first -- materialize, then index.
 
-Everything here is best-effort: a pull that cannot build an index still succeeds, and
-the missing index is visible through `ghtriage schema` rather than announced once and
-forgotten.
+An index that cannot be rebuilt is dropped rather than left: stale, it would keep
+scoring the previous pull's rows behind a plausible document count; absent, it fails
+the next search outright.
 """
 
 from pathlib import Path
@@ -40,40 +40,30 @@ def _key_is_usable(con: duckdb.DuckDBPyConnection, table: str, key_column: str) 
     """Whether `key_column` can serve as a document key.
 
     `create_fts_index` validates nothing: rows sharing a key all report the first one's
-    score, and a NULL key scores NULL forever. Both are silent, so they are checked here
-    and turned into a visible skip.
-
-    One comparison covers both: `count(DISTINCT ...)` skips NULLs, so a NULL key shows up
-    the same way a duplicate does -- as a shortfall against `count(*)`.
+    score, and a NULL key scores NULL forever, both silently.
     """
+    # One comparison covers both, because count(DISTINCT ...) skips NULLs: a NULL key
+    # falls short of count(*) exactly as a duplicate does.
     total, distinct = con.execute(
-        f"SELECT count(*), count(DISTINCT {key_column}) FROM github.{table}"  # noqa: S608
+        f"SELECT count(*), count(DISTINCT {key_column}) FROM github.{table}"
     ).fetchone()
     return total == distinct
 
 
 def create_search_indexes(db_path: Path) -> None:
-    """Create or replace every declared full-text index.
+    """Create or replace every declared full-text index over the tables as they stand.
 
-    Expects `derived.create_derived` to have run: the thread tables it indexes are built
-    there, and indexing a table that has not been rebuilt yet would leave the index a
-    pull behind.
-
-    Guarded at the outermost level, like `create_derived`: the connection and the catalog
-    probe are inside the try too, so a locked database or a blocked extension download
-    warns rather than failing the pull.
+    Raises if the database cannot be opened or the extension cannot be loaded. A table
+    that cannot be indexed is warned about and its index dropped, leaving the rest built.
     """
-    try:
-        with duckdb.connect(str(db_path)) as con:
-            present = present_tables(con)
-            for table in INDEXES:
-                _index_one(con, table, present)
-    except Exception as exc:
-        print(f"Warning: full-text index creation failed: {exc}", file=sys.stderr)
+    with duckdb.connect(str(db_path)) as con:
+        present = present_tables(con)
+        for table in INDEXES:
+            _index_one(con, table, present)
 
 
 def _drop_index(con: duckdb.DuckDBPyConnection, table: str) -> None:
-    """Remove any index from an earlier pull, so a skip leaves nothing behind."""
+    """Remove any index left from an earlier pull."""
     con.execute(f'DROP SCHEMA IF EXISTS "{index_schema(table)}" CASCADE')
 
 
@@ -122,3 +112,4 @@ def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) ->
         )
     except Exception as exc:
         print(f"Warning: could not build full-text index for {table}: {exc}", file=sys.stderr)
+        _drop_index(con, table)
