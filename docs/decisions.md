@@ -123,3 +123,52 @@ conversation comments on issues *and* pull requests, so the name actively mislea
 `name` and `endpoint.path` are separate, so the tables are renamed without touching the API calls.
 Spelled out rather than abbreviated (`pull_requests`, not `prs`) because nothing else in the schema
 is abbreviated.
+
+## 2026-08-07 — Full-text search
+
+From [#13](https://github.com/jayqi/ghtriage/issues/13) — see
+[the plan](/docs/plans/archive/2026-08-07-full-text-search.md) for the full reasoning and the
+measurements behind it.
+
+**GitHub's `id` is the full-text document key, not dlt's `_dlt_id`.**
+Rejected: `_dlt_id`, which #13 proposed as the natural key. dlt assigns it at extract time rather
+than deriving it from content, so an edited row's `_dlt_id` changes on the pull that picks the edit
+up — no good as a handle that outlives a pull. `id` is GitHub's permanent identifier, is dlt's merge
+key, and is a column agents already select. Uniqueness is the load-bearing part either way:
+`create_fts_index` validates nothing, and rows sharing a key all silently report the first one's
+score, which is why the key is checked before indexing rather than trusted.
+
+**Thread tables are materialized tables, not views.**
+Rejected: views, per the 2026-08-06 entry "Views, not materialized tables". That entry rejected
+materialization because of the invalidation cost; here it is already paid. DuckDB cannot index a
+view at all, and an FTS index has no incremental update — it is rebuilt from scratch on every pull
+regardless — so the table is rebuilt in the same step for 5–13 ms.
+
+**Thread documents fold both pull request comment channels together.**
+Rejected: mirroring the separation `pull_request_activity` keeps for counts. Whether a PR got
+discussion or code review is a fact about engagement and stays split; a search corpus just wants all
+the words.
+
+**The derived views carry `id` as their first column.**
+Rejected: leaving it out as dlt plumbing redundant with `number`. `match_bm25` is keyed on the
+document id and is not bound to the indexed table, so this one column turns "search, then filter on
+derived facts" from a join into a plain `WHERE`. It leads the projection rather than trailing it
+because a key nobody can find is a key nobody uses. It is padded like any other optional column, so
+a database whose base table predates it still gets the full column set.
+
+**DuckDB's default tokenizer is kept, so digits are not searchable.**
+Rejected: `ignore='(\.|[^a-z0-9])+'`, which makes `404` findable but stops `python` matching
+`python3.11` — it tokenizes as `python3` + `11`. Neither setting is free. Exact codes and versions
+are what `LIKE` and `regexp_matches` already do well, and full-text search is a complement to the
+SQL filters rather than a replacement.
+
+**No `search` subcommand and no SQL macro wrapper.**
+Rejected: a `search_issues(q)` table macro. It works and composes with `WHERE`, but macros are
+invisible to `information_schema.tables` and reject `COMMENT ON`, so the schema-transparency
+mechanism the rest of the project relies on cannot document them. The raw syntax is surfaced through
+`ghtriage schema` instead.
+
+**An explicit `duckdb>=1.2` pin.**
+Rejected: continuing to inherit duckdb through `dlt[duckdb]`, whose floor is `duckdb>=0.9`. The
+project has needed ≥0.10.2 since `COMMENT ON` arrived in #11, and the full-text behavior here is
+verified from 1.2 onward. Inheriting a floor nothing tests is how a dependency range ends up lying.

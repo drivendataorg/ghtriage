@@ -9,6 +9,7 @@ import duckdb
 
 from ghtriage.annotations import fetch_and_annotate
 from ghtriage.config import get_db_path, get_pipelines_dir
+from ghtriage.full_text_search import create_search_indexes
 from ghtriage.views import create_views
 
 
@@ -171,5 +172,6 @@ def run_pull(
     except Exception as exc:
         meta_error = exc
     create_views(db_path)
+    create_search_indexes(db_path)
     fetch_and_annotate(db_path)
     return load_info, meta_error

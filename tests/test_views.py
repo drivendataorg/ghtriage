@@ -40,6 +40,7 @@ def _create_schema(con: duckdb.DuckDBPyConnection) -> None:
     con.execute("CREATE SCHEMA github")
     con.execute("""
         CREATE TABLE github.issues (
+            id BIGINT,
             number BIGINT, title VARCHAR, state VARCHAR, state_reason VARCHAR,
             user__login VARCHAR, user__type VARCHAR,
             created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE,
@@ -49,6 +50,7 @@ def _create_schema(con: duckdb.DuckDBPyConnection) -> None:
     """)
     con.execute("""
         CREATE TABLE github.pull_requests (
+            id BIGINT,
             number BIGINT, title VARCHAR, state VARCHAR, draft BOOLEAN,
             user__login VARCHAR, user__type VARCHAR,
             created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE,
@@ -78,9 +80,25 @@ def _create_schema(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(f"CREATE TABLE github.{child} (login VARCHAR, _dlt_parent_id VARCHAR)")
 
 
+# The full fixture carries `id`, so inserts name their columns; the sparse fixtures below
+# omit it on purpose, to exercise the view's padding.
+_ISSUE_COLUMNS = (
+    "number, title, state, state_reason, user__login, user__type, "
+    "created_at, updated_at, closed_at, comments, assignee__login, _dlt_id"
+)
+_PULL_COLUMNS = (
+    "number, title, state, draft, user__login, user__type, "
+    "created_at, updated_at, closed_at, merged_at, assignee__login, _dlt_id"
+)
+_INSERT_ISSUE = f"INSERT INTO github.issues ({_ISSUE_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+_INSERT_PULL = (
+    f"INSERT INTO github.pull_requests ({_PULL_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+)
+
+
 def _populate(con: duckdb.DuckDBPyConnection) -> None:
     con.executemany(
-        "INSERT INTO github.issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        _INSERT_ISSUE,
         [
             (1, "has replies", "open", None, "alice", "User", _d(1), _d(9), None, 3, None, "i1"),
             (2, "silent", "open", None, "alice", "User", _d(2), _d(2), None, 0, None, "i2"),
@@ -118,7 +136,7 @@ def _populate(con: duckdb.DuckDBPyConnection) -> None:
         ],
     )
     con.executemany(
-        "INSERT INTO github.pull_requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        _INSERT_PULL,
         [
             (
                 10,
@@ -208,6 +226,8 @@ def _populate(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         "INSERT INTO github.pull_requests__requested_reviewers VALUES ('wes','p12'), ('ann','p12')"
     )
+    con.execute("UPDATE github.issues SET id = number + 1000")
+    con.execute("UPDATE github.pull_requests SET id = number + 2000")
 
 
 @pytest.fixture
@@ -259,12 +279,36 @@ def columns(db_path: Path, view: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("view", "base", "offset"),
+    [("issue_activity", "issues", 1000), ("pull_request_activity", "pull_requests", 2000)],
+)
+def test_create_views_id_leads_the_projection(db: Path, view: str, base: str, offset: int) -> None:
+    """`id` is the full-text document key, so it leads rather than hides at the end."""
+    create_views(db)
+
+    assert columns(db, view)[0] == "id"
+    assert rows(db, f"SELECT id, number FROM github.{view} ORDER BY number") == rows(
+        db, f"SELECT number + {offset}, number FROM github.{base} ORDER BY number"
+    )
+
+
+@pytest.mark.parametrize("view", ["issue_activity", "pull_request_activity"])
+def test_create_views_pads_id_when_base_table_lacks_it(sparse_db: Path, view: str) -> None:
+    """A degenerate database still gets the full column set, with id NULL."""
+    create_views(sparse_db)
+
+    assert columns(sparse_db, view)[0] == "id"
+    assert rows(sparse_db, f"SELECT DISTINCT id FROM github.{view}") == [(None,)]
+
+
 def test_create_views_creates_issue_activity(db: Path) -> None:
     create_views(db)
 
     # Identity columns lead the projection; full column order is pinned by
     # test_view_columns_match_spec.
-    assert columns(db, "issue_activity")[:6] == [
+    assert columns(db, "issue_activity")[:7] == [
+        "id",
         "number",
         "title",
         "state",
@@ -478,7 +522,7 @@ def test_create_views_non_bot_counts_treat_null_user_type_as_non_bot(
     con = duckdb.connect(str(path))
     _create_schema(con)
     con.execute(
-        "INSERT INTO github.issues VALUES "
+        f"INSERT INTO github.issues ({_ISSUE_COLUMNS}) VALUES "
         "(1,'t','open',NULL,'alice','User','2026-01-01 00:00:00+00','2026-01-01 00:00:00+00',"
         "NULL,1,NULL,'i1')"
     )
@@ -506,7 +550,7 @@ def test_create_views_non_bot_comment_count_counts_non_app_machine_account(
     con = duckdb.connect(str(path))
     _create_schema(con)
     con.execute(
-        "INSERT INTO github.issues VALUES "
+        f"INSERT INTO github.issues ({_ISSUE_COLUMNS}) VALUES "
         "(1,'t','open',NULL,'alice','User','2026-01-01 00:00:00+00','2026-01-01 00:00:00+00',"
         "NULL,1,NULL,'i1')"
     )
@@ -529,7 +573,7 @@ def test_create_views_non_bot_counts_equal_totals_when_no_bots_present(
     con = duckdb.connect(str(path))
     _create_schema(con)
     con.execute(
-        "INSERT INTO github.issues VALUES "
+        f"INSERT INTO github.issues ({_ISSUE_COLUMNS}) VALUES "
         "(1,'t','open',NULL,'alice','User','2026-01-01 00:00:00+00','2026-01-01 00:00:00+00',"
         "NULL,1,NULL,'i1')"
     )
@@ -769,7 +813,7 @@ def test_padding_does_not_coerce_existing_column_values(tmp_path: Path) -> None:
     _create_schema(con)
     closed = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
     con.executemany(
-        "INSERT INTO github.issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        _INSERT_ISSUE,
         [
             (
                 1,
@@ -913,6 +957,7 @@ def test_create_views_pull_request_activity_degrades(sparse_db: Path, db: Path) 
 TS = "TIMESTAMP WITH TIME ZONE"
 
 ISSUE_ACTIVITY_SPEC = [
+    ("id", "BIGINT"),
     ("number", "BIGINT"),
     ("title", "VARCHAR"),
     ("state", "VARCHAR"),
@@ -935,6 +980,7 @@ ISSUE_ACTIVITY_SPEC = [
 ]
 
 PULL_ACTIVITY_SPEC = [
+    ("id", "BIGINT"),
     ("number", "BIGINT"),
     ("title", "VARCHAR"),
     ("state", "VARCHAR"),
@@ -1076,7 +1122,7 @@ def test_create_views_non_author_columns_handle_null_author(tmp_path: Path) -> N
     con = duckdb.connect(str(path))
     _create_schema(con)
     con.executemany(
-        "INSERT INTO github.issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        _INSERT_ISSUE,
         [(1, "ghost author", "open", None, None, None, _d(1), _d(3), None, 1, None, "i1")],
     )
     con.executemany(
@@ -1104,7 +1150,7 @@ def test_create_views_tolerates_unparseable_comment_url(tmp_path: Path) -> None:
     con = duckdb.connect(str(path))
     _create_schema(con)
     con.executemany(
-        "INSERT INTO github.issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        _INSERT_ISSUE,
         [(1, "fine", "open", None, "alice", "User", _d(1), _d(1), None, 0, None, "i1")],
     )
     con.executemany(
@@ -1180,7 +1226,7 @@ def test_create_views_join_key_ignores_digits_in_the_repo_name(tmp_path: Path) -
     con = duckdb.connect(str(path))
     _create_schema(con)
     con.executemany(
-        "INSERT INTO github.issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        _INSERT_ISSUE,
         [
             (
                 7,
@@ -1233,7 +1279,7 @@ def test_create_views_pull_request_non_bot_counts_treat_null_user_type_as_non_bo
     con = duckdb.connect(str(path))
     _create_schema(con)
     con.executemany(
-        "INSERT INTO github.pull_requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        _INSERT_PULL,
         [(1, "pr", "open", False, "alice", "User", _d(1), _d(1), None, None, None, "p1")],
     )
     con.executemany(

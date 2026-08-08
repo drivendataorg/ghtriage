@@ -22,6 +22,7 @@ WITH issues_padded AS (
     SELECT * FROM github.issues
     UNION ALL BY NAME
     SELECT
+        NULL::BIGINT AS id,
         NULL::VARCHAR AS state_reason,
         NULL::TIMESTAMP WITH TIME ZONE AS closed_at
     WHERE false
@@ -88,6 +89,7 @@ assignee_agg AS (
     GROUP BY _dlt_parent_id
 )
 SELECT
+    i.id,
     i.number,
     i.title,
     i.state,
@@ -120,6 +122,7 @@ WITH pulls_padded AS (
     SELECT * FROM github.pull_requests
     UNION ALL BY NAME
     SELECT
+        NULL::BIGINT AS id,
         NULL::BOOLEAN AS draft,
         NULL::TIMESTAMP WITH TIME ZONE AS closed_at,
         NULL::TIMESTAMP WITH TIME ZONE AS merged_at
@@ -200,6 +203,7 @@ reviewer_agg AS (
     GROUP BY _dlt_parent_id
 )
 SELECT
+    p.id,
     p.number,
     p.title,
     p.state,
@@ -238,7 +242,8 @@ LEFT JOIN reviewer_agg rv ON rv._dlt_parent_id = p._dlt_id
 EMPTY: dict[str, str] = {
     "conversation_comments": (
         "(SELECT NULL::VARCHAR AS issue_url, NULL::VARCHAR AS user__login, "
-        "NULL::VARCHAR AS user__type, NULL::TIMESTAMP WITH TIME ZONE AS created_at WHERE false)"
+        "NULL::VARCHAR AS user__type, NULL::VARCHAR AS body, "
+        "NULL::TIMESTAMP WITH TIME ZONE AS created_at WHERE false)"
     ),
     "issues__labels": (
         "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS name WHERE false)"
@@ -248,7 +253,8 @@ EMPTY: dict[str, str] = {
     ),
     "review_comments": (
         "(SELECT NULL::VARCHAR AS pull_request_url, NULL::VARCHAR AS user__login, "
-        "NULL::VARCHAR AS user__type, NULL::TIMESTAMP WITH TIME ZONE AS created_at WHERE false)"
+        "NULL::VARCHAR AS user__type, NULL::VARCHAR AS body, "
+        "NULL::TIMESTAMP WITH TIME ZONE AS created_at WHERE false)"
     ),
     "pull_requests__labels": (
         "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS name WHERE false)"
@@ -283,6 +289,12 @@ VIEW_DOCS: dict[str, str] = {
 
 VIEW_COLUMN_DOCS: dict[str, dict[str, str]] = {
     "issue_activity": {
+        "id": (
+            "Pass-through of issues.id. The full-text document key: pass it to "
+            "fts_github_issues.match_bm25 to search titles and bodies without joining, or to "
+            "fts_github_issue_threads.match_bm25 to search whole threads. Prefer number as the "
+            "human-facing identifier."
+        ),
         "number": "Pass-through of issues.number.",
         "title": "Pass-through of issues.title.",
         "state": "Pass-through of issues.state.",
@@ -345,6 +357,12 @@ VIEW_COLUMN_DOCS: dict[str, dict[str, str]] = {
         ),
     },
     "pull_request_activity": {
+        "id": (
+            "Pass-through of pull_requests.id. The full-text document key: pass it to "
+            "fts_github_pull_requests.match_bm25 to search titles and bodies without joining, or "
+            "to fts_github_pull_request_threads.match_bm25 to search whole threads. Prefer number "
+            "as the human-facing identifier."
+        ),
         "number": "Pass-through of pull_requests.number.",
         "title": "Pass-through of pull_requests.title.",
         "state": (
@@ -429,13 +447,13 @@ VIEW_COLUMN_DOCS: dict[str, dict[str, str]] = {
 }
 
 
-def _quote(text: str) -> str:
+def quote_literal(text: str) -> str:
     """Escape a string for a DDL literal. COMMENT ON does not take bound parameters."""
     escaped = text.replace("'", "''")
     return f"'{escaped}'"
 
 
-def _present_tables(con: duckdb.DuckDBPyConnection) -> set[str]:
+def present_tables(con: duckdb.DuckDBPyConnection) -> set[str]:
     return {
         row[0]
         for row in con.execute(
@@ -444,7 +462,7 @@ def _present_tables(con: duckdb.DuckDBPyConnection) -> set[str]:
     }
 
 
-def _render(sql: str, present: set[str]) -> str:
+def render_slots(sql: str, present: set[str]) -> str:
     """Fill each optional-source slot with the real table or an empty stand-in."""
     return sql.format(
         **{slot: (f"github.{slot}" if slot in present else empty) for slot, empty in EMPTY.items()}
@@ -461,7 +479,7 @@ def create_views(db_path: Path) -> None:
     """
     try:
         with duckdb.connect(str(db_path)) as con:
-            present = _present_tables(con)
+            present = present_tables(con)
             for name, sql in VIEWS.items():
                 _create_one(con, name, sql, present)
     except Exception as exc:
@@ -477,11 +495,11 @@ def _create_one(con: duckdb.DuckDBPyConnection, name: str, sql: str, present: se
         )
         return
     try:
-        con.execute(f"CREATE OR REPLACE VIEW github.{name} AS {_render(sql, present)}")
+        con.execute(f"CREATE OR REPLACE VIEW github.{name} AS {render_slots(sql, present)}")
 
         # CREATE OR REPLACE drops comments, so they are reapplied every time.
-        con.execute(f"COMMENT ON VIEW github.{name} IS {_quote(VIEW_DOCS[name])}")
+        con.execute(f"COMMENT ON VIEW github.{name} IS {quote_literal(VIEW_DOCS[name])}")
         for column, doc in VIEW_COLUMN_DOCS[name].items():
-            con.execute(f"COMMENT ON COLUMN github.{name}.{column} IS {_quote(doc)}")
+            con.execute(f"COMMENT ON COLUMN github.{name}.{column} IS {quote_literal(doc)}")
     except Exception as exc:
         print(f"Warning: could not create view {name}: {exc}", file=sys.stderr)

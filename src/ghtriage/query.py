@@ -4,6 +4,7 @@ from pathlib import Path
 import duckdb
 
 from ghtriage.config import get_db_path
+from ghtriage.full_text_search import INDEXES
 
 _MAIN_TABLES = ("issues", "pull_requests", "conversation_comments", "review_comments")
 
@@ -98,6 +99,56 @@ def get_table_descriptions(cwd: str | Path | None = None) -> dict[str, str]:
             """
         ).fetchall()
     return {name: comment for name, comment in rows if comment}
+
+
+@dataclass
+class FullTextIndex:
+    table: str
+    key_column: str | None
+    columns: list[str]
+    document_count: int
+
+
+def get_full_text_indexes(cwd: str | Path | None = None) -> list[FullTextIndex]:
+    """Return the full-text indexes present in the database, ordered by table name.
+
+    Existence, indexed columns and document counts are read from each index's own
+    catalog tables, so they cannot drift from what was actually built. The key column
+    is not recoverable that way -- `docs` stores key values under an opaque `name` --
+    so it comes from the declaration, and is None for an index ghtriage did not declare.
+    """
+    db_path = _resolve_db_path(cwd=cwd)
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        schemas = [
+            row[0]
+            for row in conn.execute(
+                "SELECT schema_name FROM duckdb_schemas() "
+                "WHERE schema_name LIKE 'fts_github_%' ORDER BY schema_name"
+            ).fetchall()
+        ]
+
+        indexes = []
+        for schema in schemas:
+            table = schema.removeprefix("fts_github_")
+            columns = [
+                row[0]
+                for row in conn.execute(
+                    f'SELECT field FROM "{schema}".fields ORDER BY fieldid'  # noqa: S608
+                ).fetchall()
+            ]
+            count = conn.execute(
+                f'SELECT count(*) FROM "{schema}".docs'  # noqa: S608
+            ).fetchone()[0]
+            declared = INDEXES.get(table)
+            indexes.append(
+                FullTextIndex(
+                    table=table,
+                    key_column=declared[0] if declared else None,
+                    columns=columns,
+                    document_count=count,
+                )
+            )
+    return indexes
 
 
 @dataclass

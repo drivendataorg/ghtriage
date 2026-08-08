@@ -25,6 +25,10 @@ def _install_pipeline_mocks(monkeypatch):
     call_order: list[str] = []
     mock_create_views = Mock(side_effect=lambda *_a, **_k: call_order.append("create_views"))
     monkeypatch.setattr("ghtriage.pipeline.create_views", mock_create_views)
+    mock_create_search_indexes = Mock(
+        side_effect=lambda *_a, **_k: call_order.append("create_search_indexes")
+    )
+    monkeypatch.setattr("ghtriage.pipeline.create_search_indexes", mock_create_search_indexes)
     mock_fetch_and_annotate = Mock(
         side_effect=lambda *_a, **_k: call_order.append("fetch_and_annotate")
     )
@@ -41,6 +45,7 @@ def _install_pipeline_mocks(monkeypatch):
         mock_write_meta,
         mock_fetch_and_annotate,
         mock_create_views,
+        mock_create_search_indexes,
         call_order,
     )
 
@@ -57,6 +62,7 @@ def test_run_pull_smoke_full_false_calls_pipeline_run_once(tmp_path: Path, monke
         mock_write_meta,
         mock_fetch_and_annotate,
         mock_create_views,
+        _mock_create_search_indexes,
         call_order,
     ) = _install_pipeline_mocks(monkeypatch)
 
@@ -103,6 +109,7 @@ def test_run_pull_full_true_removes_existing_state_then_runs(tmp_path: Path, mon
         _mock_write_meta,
         _mock_fetch_and_annotate,
         _mock_create_views,
+        _mock_create_search_indexes,
         _call_order,
     ) = _install_pipeline_mocks(monkeypatch)
 
@@ -136,6 +143,7 @@ def test_run_pull_full_true_handles_missing_state(tmp_path: Path, monkeypatch) -
         _mock_write_meta,
         _mock_fetch_and_annotate,
         _mock_create_views,
+        _mock_create_search_indexes,
         _call_order,
     ) = _install_pipeline_mocks(monkeypatch)
 
@@ -158,6 +166,7 @@ def test_run_pull_builds_source_with_repo_and_token(tmp_path: Path, monkeypatch)
         _mock_write_meta,
         _mock_fetch_and_annotate,
         _mock_create_views,
+        _mock_create_search_indexes,
         _call_order,
     ) = _install_pipeline_mocks(monkeypatch)
 
@@ -214,6 +223,7 @@ def test_run_pull_creates_views_before_annotating(tmp_path: Path, monkeypatch) -
         _mock_write_meta,
         _mock_fetch_and_annotate,
         mock_create_views,
+        _mock_create_search_indexes,
         call_order,
     ) = _install_pipeline_mocks(monkeypatch)
     monkeypatch.chdir(tmp_path)
@@ -222,7 +232,7 @@ def test_run_pull_creates_views_before_annotating(tmp_path: Path, monkeypatch) -
 
     db_path = tmp_path / ".ghtriage" / "ghtriage.duckdb"
     mock_create_views.assert_called_once_with(db_path)
-    assert call_order == ["create_views", "fetch_and_annotate"]
+    assert call_order == ["create_views", "create_search_indexes", "fetch_and_annotate"]
 
 
 def test_run_pull_creates_views_on_full_rebuild(tmp_path: Path, monkeypatch) -> None:
@@ -237,6 +247,7 @@ def test_run_pull_creates_views_on_full_rebuild(tmp_path: Path, monkeypatch) -> 
         _mock_write_meta,
         _mock_fetch_and_annotate,
         mock_create_views,
+        _mock_create_search_indexes,
         call_order,
     ) = _install_pipeline_mocks(monkeypatch)
     monkeypatch.chdir(tmp_path)
@@ -244,4 +255,30 @@ def test_run_pull_creates_views_on_full_rebuild(tmp_path: Path, monkeypatch) -> 
     run_pull(repo="owner/repo", token="t", full=True)
 
     mock_create_views.assert_called_once()
-    assert call_order == ["create_views", "fetch_and_annotate"]
+    assert call_order == ["create_views", "create_search_indexes", "fetch_and_annotate"]
+
+
+def test_run_pull_builds_search_indexes_between_views_and_annotation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (
+        _sentinel_destination,
+        _sentinel_source,
+        _sentinel_run_result,
+        _mock_duckdb_factory,
+        _mock_pipeline_obj,
+        _mock_pipeline_factory,
+        _mock_rest_api_source,
+        _mock_write_meta,
+        _mock_fetch_and_annotate,
+        _mock_create_views,
+        mock_create_search_indexes,
+        call_order,
+    ) = _install_pipeline_mocks(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    run_pull(repo="owner/repo", token="t", full=False)
+
+    db_path = tmp_path / ".ghtriage" / "ghtriage.duckdb"
+    mock_create_search_indexes.assert_called_once_with(db_path)
+    assert call_order == ["create_views", "create_search_indexes", "fetch_and_annotate"]

@@ -66,6 +66,7 @@ ghtriage schema --table issue_activity
 ghtriage query "SELECT number, title, state FROM issues LIMIT 5"
 ghtriage query "SELECT count(*) AS n FROM issues" --format json
 ghtriage query "SELECT number, title FROM issue_activity WHERE state = 'open' AND first_non_author_comment_at IS NULL"
+ghtriage query "SELECT number, title, score FROM (SELECT *, fts_github_issue_threads.match_bm25(id, 'cache invalidation') AS score FROM issue_threads) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 5"
 ```
 
 ### Exit codes
@@ -97,6 +98,13 @@ The directory manages its own `.gitignore` so that only `config.toml` can be com
 | `conversation_comments` | Comments on the main thread of the issue or pull request. |
 | `review_comments` | Inline comments on a pull request's diff. |
 
+Two more tables are derived from these on every pull, for full-text search:
+
+| Table | Contents |
+|---|---|
+| `issue_threads` | One searchable document per issue: title, body, and all its conversation comments. |
+| `pull_request_threads` | One searchable document per pull request, including review comments. |
+
 Nested arrays become child tables named with a double-underscore, e.g., `issues__labels`, and can be joined to their parent on `_dlt_parent_id = _dlt_id`.
 
 If any entity has zero records, then no table will be created rather than an empty. Run `ghtriage schema` for the authoritative list of what your
@@ -116,6 +124,29 @@ They are rebuilt each time the data refreshes, and every column carries a descri
 - **Bot activity is split out, not filtered.** `comment_count` counts everything, and `non_bot_comment_count` counts only accounts GitHub does not type as `Bot`. Whether a bot comment means the issue got attention is a judgment, so both numbers are available and neither is imposed. The same pattern applies to review comments and participants.
 
 Everything in these views is recomputable from the raw tables — they are a convenience layer, never a source of truth.
+
+### Full-text search
+
+Every `ghtriage pull` also builds BM25 full-text indexes, so "has this been reported before?" is a ranked query rather than a scan. Indexes are built over `issues` and `pull_requests` (title and body), both comment tables (body), and two derived tables:
+
+- **`issue_threads`** — one document per issue: its title, body, and every conversation comment on it.
+- **`pull_request_threads`** — one document per pull request, folding in both conversation and review comments.
+
+The thread tables are what make duplicate-hunting work. Searching the comment tables directly returns comment rows that have to be traced back to their issue, and it scores each comment separately, so a thread that circles a topic across several replies loses to a single comment that says it all. Searching a thread returns ranked issues.
+
+Each index lives in a schema named for its table — `fts_github_issues`, `fts_github_issue_threads` — and exposes `match_bm25(id, 'query')`:
+
+```bash
+ghtriage query "SELECT number, title, score FROM (SELECT *, fts_github_issue_threads.match_bm25(id, 'timeout uploading large files') AS score FROM issue_threads) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10"
+```
+
+Run `ghtriage schema` for the indexes your database actually holds, with their columns and document counts. Things worth knowing:
+
+- **The score function is keyed on the document id, not bound to its table.** Both derived views carry `id`, so you can search and filter on derived facts in one query with no join: `SELECT * FROM (SELECT *, fts_github_issues.match_bm25(id, 'windows path') AS score FROM issue_activity) WHERE score IS NOT NULL AND state = 'open'`.
+- **Pairing a table with the wrong index returns nothing rather than an error.** An id the index does not hold simply scores `NULL`. If a search comes back empty, check the index name before concluding the repository has nothing.
+- **Digits are not indexed.** The tokenizer strips them, so searching `404` finds nothing. Exact codes, versions, and identifiers are what `LIKE` and `regexp_matches` are for; full-text search complements those rather than replacing them.
+- **Terms are OR-ed and stemmed by default.** `'azure credential'` matches documents containing either word, and `renaming` matches `rename`. Pass `conjunctive := 1` to require every term.
+- **Indexes are rebuilt from scratch on every pull**, so they are exactly as fresh as the data. On a repository with ~2,500 documents this adds about a third of a second to a pull and about 35% to the database file.
 
 Some behaviors to be aware of:
 

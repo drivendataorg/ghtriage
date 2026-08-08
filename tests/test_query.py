@@ -5,8 +5,10 @@ import duckdb
 import pytest
 
 from ghtriage.query import (
+    FullTextIndex,
     StatusData,
     execute_query,
+    get_full_text_indexes,
     get_status_data,
     get_table_columns,
     get_table_descriptions,
@@ -213,3 +215,37 @@ def test_get_table_columns_works_on_views(cwd_with_view: Path) -> None:
         "id",
         "title",
     ]
+
+
+@pytest.fixture
+def cwd_with_index(sample_cwd: Path) -> Path:
+    """sample_cwd plus a full-text index, as create_search_indexes() would leave it."""
+    db_path = sample_cwd / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("PRAGMA create_fts_index('github.issues', 'id', 'title', overwrite=1)")
+    return sample_cwd
+
+
+def test_get_full_text_indexes_returns_nothing_when_none_exist(sample_cwd: Path) -> None:
+    assert get_full_text_indexes(cwd=sample_cwd) == []
+
+
+def test_get_full_text_indexes_reports_columns_and_document_count(cwd_with_index: Path) -> None:
+    indexes = get_full_text_indexes(cwd=cwd_with_index)
+
+    assert len(indexes) == 1
+    assert indexes[0] == FullTextIndex(
+        table="issues", key_column="id", columns=["title"], document_count=2
+    )
+
+
+def test_get_full_text_indexes_reads_columns_from_the_catalog(cwd_with_index: Path) -> None:
+    """Reported columns come from the index itself, not from the declaration."""
+    db_path = cwd_with_index / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("ALTER TABLE github.issues ADD COLUMN body VARCHAR")
+        conn.execute(
+            "PRAGMA create_fts_index('github.issues', 'id', 'title', 'body', overwrite=1)"
+        )
+
+    assert get_full_text_indexes(cwd=cwd_with_index)[0].columns == ["title", "body"]

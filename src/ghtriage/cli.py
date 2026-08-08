@@ -6,9 +6,12 @@ import sys
 from typing import Sequence
 
 from ghtriage.config import get_db_path, resolve_repo, resolve_token
+from ghtriage.full_text_search import INDEXES
 from ghtriage.pipeline import run_pull
 from ghtriage.query import (
+    FullTextIndex,
     execute_query,
+    get_full_text_indexes,
     get_status_data,
     get_table_columns,
     get_table_descriptions,
@@ -121,9 +124,63 @@ def _run_query(args: argparse.Namespace) -> int:
     return 1
 
 
+def _print_index_block(indexes: list[FullTextIndex]) -> None:
+    """The searchable surface, read from the indexes themselves.
+
+    An agent that cannot discover an index may as well not have one, and the
+    fail-closed note is here because nothing else can report it: an id scored against
+    another table's index simply returns nothing.
+    """
+    if not indexes:
+        return
+
+    print()
+    print("Full-text search indexes")
+    print()
+    _format_table(
+        ["table", "key", "indexed columns", "documents"],
+        [
+            (
+                index.table,
+                index.key_column or "",
+                ", ".join(index.columns),
+                f"{index.document_count:,}",
+            )
+            for index in indexes
+        ],
+    )
+    # Listed alphabetically, but demonstrated with whichever index comes first in the
+    # declaration -- `issues` reads as an example in a way that a comment table does not.
+    order = list(INDEXES)
+    example = min(
+        indexes,
+        key=lambda index: order.index(index.table) if index.table in order else len(order),
+    )
+    key = example.key_column or "id"
+    print()
+    print("Search a table by scoring its key column against its own index:")
+    print("  SELECT *, score FROM (")
+    print(f"      SELECT *, fts_github_{example.table}.match_bm25({key}, 'search terms') AS score")
+    print(f"      FROM {example.table}")
+    print("  ) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10")
+    print()
+    print("The macro is keyed on the document id, not bound to its table, so it also works")
+    print("from any view carrying that id. An id the index does not hold scores NULL, so")
+    print("pairing a table with another table's index returns no rows rather than an error.")
+
+
 def _run_schema(args: argparse.Namespace) -> int:
     try:
         if args.table:
+            indexes = [i for i in get_full_text_indexes() if i.table == args.table]
+            if indexes:
+                index = indexes[0]
+                print(
+                    f"Full-text search: fts_github_{index.table}."
+                    f"match_bm25({index.key_column or 'id'}, 'query') "
+                    f"over {', '.join(index.columns)} ({index.document_count:,} documents)"
+                )
+                print()
             columns = get_table_columns(args.table)
             has_descriptions = any(desc is not None for _, _, _, desc in columns)
             if has_descriptions:
@@ -151,6 +208,7 @@ def _run_schema(args: argparse.Namespace) -> int:
         else:
             for table in tables:
                 print(table)
+        _print_index_block(get_full_text_indexes())
         return 0
     except Exception as exc:
         print(f"Schema inspection failed: {exc}", file=sys.stderr)

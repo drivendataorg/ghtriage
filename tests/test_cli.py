@@ -292,3 +292,92 @@ def test_schema_table_details_works_on_a_view(cwd_with_view: Path, monkeypatch, 
     out = capsys.readouterr().out
     assert rc == 0
     assert "Pass-through of issues.id." in out
+
+
+@pytest.fixture
+def cwd_with_index(sample_cwd: Path) -> Path:
+    """sample_cwd plus a full-text index, as create_search_indexes() would leave it."""
+    db_path = sample_cwd / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("PRAGMA create_fts_index('github.issues', 'id', 'title', overwrite=1)")
+    return sample_cwd
+
+
+def test_schema_listing_shows_full_text_indexes(cwd_with_index: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(cwd_with_index)
+
+    rc = run(["schema"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Full-text search indexes" in out
+    assert "fts_github_issues.match_bm25" in out
+    # The index's own columns and document count, not the declaration's.
+    assert "title" in out
+    assert "2" in out
+
+
+def test_schema_listing_omits_index_block_when_there_are_none(
+    sample_cwd: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(sample_cwd)
+
+    rc = run(["schema"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Full-text search" not in out
+
+
+def test_schema_listing_warns_that_a_wrong_index_returns_no_rows(
+    cwd_with_index: Path, monkeypatch, capsys
+) -> None:
+    """The failure mode is silent, so the only place it can be caught is here."""
+    monkeypatch.chdir(cwd_with_index)
+
+    run(["schema"])
+
+    assert "no rows rather than an error" in capsys.readouterr().out
+
+
+def test_schema_table_details_shows_the_index(cwd_with_index: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(cwd_with_index)
+
+    rc = run(["schema", "--table", "issues"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "fts_github_issues.match_bm25(id, 'query')" in out
+    assert "title" in out
+
+
+def test_schema_table_details_omits_index_line_for_unindexed_table(
+    cwd_with_index: Path, monkeypatch, capsys
+) -> None:
+    db_path = cwd_with_index / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("CREATE TABLE github.other (id BIGINT)")
+    monkeypatch.chdir(cwd_with_index)
+
+    run(["schema", "--table", "other"])
+
+    assert "match_bm25" not in capsys.readouterr().out
+
+
+def test_schema_index_example_uses_the_first_declared_table(
+    cwd_with_index: Path, monkeypatch, capsys
+) -> None:
+    """Listing is alphabetical, but a comment table is a poor thing to demonstrate with."""
+    db_path = cwd_with_index / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("CREATE TABLE github.conversation_comments (id BIGINT, body VARCHAR)")
+        con.execute("INSERT INTO github.conversation_comments VALUES (1, 'a comment')")
+        con.execute(
+            "PRAGMA create_fts_index('github.conversation_comments', 'id', 'body', overwrite=1)"
+        )
+    monkeypatch.chdir(cwd_with_index)
+
+    run(["schema"])
+
+    out = capsys.readouterr().out
+    assert "SELECT *, fts_github_issues.match_bm25(id, 'search terms') AS score" in out
