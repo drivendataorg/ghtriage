@@ -209,9 +209,9 @@ def _populate(con: duckdb.DuckDBPyConnection) -> None:
     con.executemany(
         f"INSERT INTO github.conversation_comments ({_CONVERSATION_COLUMNS}) VALUES (?,?,?,?,?,?)",
         [
+            (103, _api("issues", 1), "codecov[bot]", "Bot", _d(9), _d(9)),
             (101, _api("issues", 1), "bob", "User", _d(5), _d(5)),
             (102, _api("issues", 1), "alice", "User", _d(7), _d(7)),
-            (103, _api("issues", 1), "codecov[bot]", "Bot", _d(9), _d(9)),
             (104, _api("issues", 3), "ci[bot]", "Bot", _d(6), _d(6)),
             (105, _api("issues", 3), "carol", "User", _d(7), _d(7)),
             (106, _api("issues", 4), "dave", "User", _d(5), _d(5)),
@@ -1444,3 +1444,52 @@ def test_create_derived_thread_tables_carry_what_the_indexer_declares(db: Path) 
             continue
         key_column, text_columns = INDEXES[name]
         assert {key_column, *text_columns} <= set(columns(db, name)), name
+
+
+def table_exists(db_path: Path, name: str) -> bool:
+    return rows(
+        db_path,
+        "SELECT count(*) FROM information_schema.tables "
+        f"WHERE table_schema = 'github' AND table_name = '{name}'",
+    ) == [(1,)]
+
+
+def test_create_derived_drops_a_thread_table_it_can_no_longer_build(db: Path) -> None:
+    """A stale thread table is worse than none: it holds the previous pull's text, and
+    the indexer would happily build a fresh index over it."""
+    create_derived(db)
+    assert table_exists(db, "issue_threads")
+
+    with duckdb.connect(str(db)) as con:
+        con.execute("DROP TABLE github.issues")
+    create_derived(db)
+
+    assert not table_exists(db, "issue_threads")
+
+
+def test_create_derived_drops_a_thread_table_whose_rebuild_raises(db: Path) -> None:
+    create_derived(db)
+
+    broken = dict(DERIVED)
+    broken["issue_threads"] = derived_module.Derived(
+        "TABLE", "issues", "SELECT * FROM github.does_not_exist", requires=("id",)
+    )
+    with patch.object(derived_module, "DERIVED", broken):
+        create_derived(db)
+
+    assert not table_exists(db, "issue_threads")
+
+
+def test_create_derived_keeps_a_view_it_can_no_longer_build(db: Path) -> None:
+    """Views are not dropped: one holds a query, not rows, so a failed replace leaves
+    current data behind an older definition rather than stale data behind a current one."""
+    create_derived(db)
+
+    broken = dict(DERIVED)
+    broken["issue_activity"] = derived_module.Derived(
+        "VIEW", "issues", "SELECT * FROM github.does_not_exist"
+    )
+    with patch.object(derived_module, "DERIVED", broken):
+        create_derived(db)
+
+    assert rows(db, "SELECT count(*) FROM github.issue_activity") == [(7,)]

@@ -189,8 +189,8 @@ are one kind of thing to a user and now to the code: one registry, one build pat
 
 **`full_text_search` depends on `derived` having run, and that is not treated as a hazard.**
 Rejected: defending the ordering with structure. Materialize, then index is how indexing works
-everywhere; a maintainer arrives knowing it, and violating it cannot go unnoticed — the pull warns
-that it skipped the index, and because a skip drops any index left from an earlier pull, every
-search then errors on a missing schema rather than quietly scoring stale rows. `run_pull` pins the order, a test pins
+everywhere; a maintainer arrives knowing it, and violating it cannot go unnoticed — the pull warns,
+and because both modules drop what they cannot rebuild, every search then errors on a missing
+schema rather than quietly scoring the previous pull's text. `run_pull` pins the order, a test pins
 `run_pull`, and `create_search_indexes` states the precondition. See the 2026-08-07 entry "Thread
 tables are materialized, not views" for why they are tables at all.

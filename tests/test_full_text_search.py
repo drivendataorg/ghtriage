@@ -427,3 +427,21 @@ def test_indexes_the_thread_tables_that_derived_builds(tmp_path: Path) -> None:
 
     # Findable only if the thread table concatenated the comment and the index read it.
     assert [number for number, _ in _search(path, "issue_threads", "zzyzx")] == [1]
+
+
+def test_skipping_a_vanished_table_drops_the_previous_index(db: Path) -> None:
+    create_search_indexes(db)
+
+    _drop(db, "DROP TABLE github.review_comments")
+    create_search_indexes(db)
+
+    assert index_schema("review_comments") not in _schemas(db)
+
+
+def test_skipping_a_vanished_key_column_drops_the_previous_index(db: Path) -> None:
+    create_search_indexes(db)
+
+    _drop(db, "ALTER TABLE github.issues DROP COLUMN id")
+    create_search_indexes(db)
+
+    assert index_schema("issues") not in _schemas(db)

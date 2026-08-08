@@ -129,7 +129,8 @@ def _print_index_block(indexes: list[FullTextIndex]) -> None:
 
     An agent that cannot discover an index may as well not have one, and the
     fail-closed note is here because nothing else can report it: an id scored against
-    another table's index simply returns nothing.
+    another table's index almost always returns nothing, which reads the same as a
+    repository that genuinely has no match.
     """
     if not indexes:
         return
@@ -159,14 +160,16 @@ def _print_index_block(indexes: list[FullTextIndex]) -> None:
     key = example.key_column or "id"
     print()
     print("Search a table by scoring its key column against its own index:")
-    print("  SELECT *, score FROM (")
+    print("  SELECT * FROM (")
     print(f"      SELECT *, fts_github_{example.table}.match_bm25({key}, 'search terms') AS score")
     print(f"      FROM {example.table}")
     print("  ) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10")
     print()
     print("The macro is keyed on the document id, not bound to its table, so it also works")
     print("from any view carrying that id. An id the index does not hold scores NULL, so")
-    print("pairing a table with another table's index returns no rows rather than an error.")
+    print("pairing a table with another table's index almost always returns no rows rather")
+    print("than an error -- almost, because GitHub ids are unique per object type, not")
+    print("globally, so a colliding id would score against the wrong document.")
 
 
 def _run_schema(args: argparse.Namespace) -> int:

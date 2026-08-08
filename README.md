@@ -141,7 +141,7 @@ ghtriage query "SELECT number, title, round(score, 2) AS score FROM (SELECT *, f
 Run `ghtriage schema` for the indexes your database actually holds, with their columns and document counts. Things worth knowing:
 
 - **The score function is keyed on the document id, not bound to its table.** Both derived views carry `id`, so you can search and filter on derived facts in one query with no join: `SELECT * FROM (SELECT *, fts_github_issues.match_bm25(id, 'windows path') AS score FROM issue_activity) WHERE score IS NOT NULL AND state = 'open'`.
-- **Pairing a table with the wrong index returns nothing rather than an error.** An id the index does not hold simply scores `NULL`. If a search comes back empty, check the index name before concluding the repository has nothing.
+- **Pairing a table with the wrong index almost always returns nothing rather than an error.** An id the index does not hold simply scores `NULL`, so a search that comes back empty may be a wrong index name rather than an empty repository. Almost, because GitHub ids are unique per object type rather than globally: a colliding id scores against the wrong document instead.
 - **Digits are not indexed.** The tokenizer strips them, so searching `404` finds nothing. Use `LIKE` or `regexp_matches` for exact codes, versions, and identifiers.
 - **Terms are OR-ed and stemmed by default.** `'azure credential'` matches documents containing either word, and `renaming` matches `rename`. Pass `conjunctive := 1` to require every term.
 - **Indexes are rebuilt from scratch on every pull**, so they are exactly as fresh as the data. On a repository with ~2,500 documents this adds about a third of a second to a pull and about 35% to the database file.

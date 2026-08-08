@@ -79,16 +79,16 @@ def _drop_index(con: duckdb.DuckDBPyConnection, table: str) -> None:
 
 def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) -> None:
     key_column, columns = INDEXES[table]
-    if table not in present:
-        built_here = " (built by `derived`, which runs first)" if table in DERIVED else ""
-        print(
-            f"Note: skipping full-text index for {table}; "
-            f"the table is not present yet{built_here}.",
-            file=sys.stderr,
-        )
-        _drop_index(con, table)
-        return
     try:
+        if table not in present:
+            built_here = " (built by `derived`, which runs first)" if table in DERIVED else ""
+            print(
+                f"Note: skipping full-text index for {table}; "
+                f"the table is not present yet{built_here}.",
+                file=sys.stderr,
+            )
+            _drop_index(con, table)
+            return
         available = present_columns(con, table)
         if key_column not in available:
             print(

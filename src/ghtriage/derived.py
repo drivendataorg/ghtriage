@@ -618,6 +618,19 @@ def create_derived(db_path: Path) -> None:
         print(f"Warning: derived object creation failed: {exc}", file=sys.stderr)
 
 
+def _drop_if_stale(con: duckdb.DuckDBPyConnection, name: str) -> None:
+    """Remove a derived table that could not be rebuilt.
+
+    Only tables. A table that is not rebuilt still holds the previous pull's rows, and
+    `full_text_search` would index that stale text over a document count that looks
+    entirely plausible in `ghtriage schema`. A view holds a query rather than rows, so a
+    failed replace leaves current data behind an older definition -- milder, and dropping
+    it would turn a transient failure into a vanished view.
+    """
+    if DERIVED[name].kind == "TABLE":
+        con.execute(f"DROP TABLE IF EXISTS github.{name}")
+
+
 def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) -> None:
     spec = DERIVED[name]
     kind = spec.kind.lower()
@@ -626,12 +639,14 @@ def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) ->
             f"Note: skipping {kind} {name}; source table {spec.base} is not present yet.",
             file=sys.stderr,
         )
+        _drop_if_stale(con, name)
         return
     if missing := sorted(set(spec.requires) - present_columns(con, spec.base)):
         print(
             f"Note: skipping {kind} {name}; {spec.base} has no {', '.join(missing)} column yet.",
             file=sys.stderr,
         )
+        _drop_if_stale(con, name)
         return
     try:
         usable = {
@@ -649,3 +664,4 @@ def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) ->
             con.execute(f"COMMENT ON COLUMN github.{name}.{column} IS {quote_literal(doc)}")
     except Exception as exc:
         print(f"Warning: could not create {kind} {name}: {exc}", file=sys.stderr)
+        _drop_if_stale(con, name)

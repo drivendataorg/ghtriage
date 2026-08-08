@@ -338,7 +338,9 @@ def test_schema_listing_warns_that_a_wrong_index_returns_no_rows(
 
     run(["schema"])
 
-    assert "no rows rather than an error" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "almost always returns no rows" in out
+    assert "colliding id" in out
 
 
 def test_schema_table_details_shows_the_index(cwd_with_index: Path, monkeypatch, capsys) -> None:
