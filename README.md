@@ -111,7 +111,7 @@ database actually holds.
 
 ### Derived tables and views
 
-Every `ghtriage pull` also builds four derived objects. All are rebuilt each time the data refreshes, all are recomputable from the raw tables — a convenience layer — and every column carries a description you can read with `ghtriage schema --table <name>`.
+Every `ghtriage pull` also builds four derived objects. All are rebuilt each time the data refreshes, and every column carries a description you can read with `ghtriage schema --table <name>`.
 
 - **`issue_activity`** — one row per issue, with comment counts and timestamps, labels, and assignees already joined.
 - **`pull_request_activity`** — one row per pull request, the same plus review-comment facts and pending review requests.
