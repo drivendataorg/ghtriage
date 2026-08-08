@@ -130,15 +130,20 @@ def get_full_text_indexes(cwd: str | Path | None = None) -> list[FullTextIndex]:
         indexes = []
         for schema in schemas:
             table = schema.removeprefix("fts_github_")
-            columns = [
-                row[0]
-                for row in conn.execute(
-                    f'SELECT field FROM "{schema}".fields ORDER BY fieldid'  # noqa: S608
-                ).fetchall()
-            ]
-            count = conn.execute(
-                f'SELECT count(*) FROM "{schema}".docs'  # noqa: S608
-            ).fetchone()[0]
+            try:
+                columns = [
+                    row[0]
+                    for row in conn.execute(
+                        f'SELECT field FROM "{schema}".fields ORDER BY fieldid'  # noqa: S608
+                    ).fetchall()
+                ]
+                count = conn.execute(
+                    f'SELECT count(*) FROM "{schema}".docs'  # noqa: S608
+                ).fetchone()[0]
+            except Exception:
+                # An index whose catalog tables cannot be read is not reportable, but it
+                # must not take the rest of `ghtriage schema` down with it.
+                continue
             declared = INDEXES.get(table)
             indexes.append(
                 FullTextIndex(

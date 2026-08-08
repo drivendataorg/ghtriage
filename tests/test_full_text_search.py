@@ -4,6 +4,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from ghtriage import full_text_search
+from ghtriage.derived import create_derived
 from ghtriage.full_text_search import INDEXES, create_search_indexes, index_schema
 
 # ---------------------------------------------------------------------------
@@ -338,12 +340,25 @@ def test_skips_table_when_key_is_null(db: Path) -> None:
 def test_swallows_errors_from_one_table(
     db: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    monkeypatch.setitem(INDEXES, "issues", ("id", ("no_such_column",)))
+    """One table raising must not abort the tables after it.
+
+    The failure has to come from the PRAGMA itself: a declared column that is merely
+    absent is filtered out earlier, which is a different path.
+    """
+    real_check = full_text_search._key_is_usable
+
+    def explode_for_issues(con, table, key_column):
+        if table == "issues":
+            raise RuntimeError("index build exploded")
+        return real_check(con, table, key_column)
+
+    monkeypatch.setattr(full_text_search, "_key_is_usable", explode_for_issues)
 
     create_search_indexes(db)
 
     assert index_schema("pull_requests") in _schemas(db)
-    assert capsys.readouterr().err != ""
+    assert index_schema("issues") not in _schemas(db)
+    assert "index build exploded" in capsys.readouterr().err
 
 
 def test_swallows_errors_when_database_is_unusable(
@@ -354,3 +369,61 @@ def test_swallows_errors_when_database_is_unusable(
     create_search_indexes(missing)
 
     assert "Warning" in capsys.readouterr().err
+
+
+def test_skipping_a_rebuild_drops_the_previous_index(db: Path) -> None:
+    """A skipped build must leave no index, not yesterday's.
+
+    `overwrite=1` only refreshes when the PRAGMA runs, so without an explicit drop a
+    degraded pull would keep scoring against the previous pull's rows -- silently, and
+    with a document count that looks plausible in `ghtriage schema`.
+    """
+    create_search_indexes(db)
+    assert index_schema("issues") in _schemas(db)
+
+    _drop(db, "ALTER TABLE github.issues DROP COLUMN title")
+    _drop(db, "ALTER TABLE github.issues DROP COLUMN body")
+    create_search_indexes(db)
+
+    assert index_schema("issues") not in _schemas(db)
+
+
+def test_skipping_a_rebuild_for_an_unusable_key_drops_the_previous_index(db: Path) -> None:
+    create_search_indexes(db)
+
+    _drop(db, "INSERT INTO github.issues VALUES (1001, 5, 'duplicate id', 'body', 'i5')")
+    create_search_indexes(db)
+
+    assert index_schema("issues") not in _schemas(db)
+
+
+# ---------------------------------------------------------------------------
+# Composition with `derived`
+# ---------------------------------------------------------------------------
+
+
+def test_indexes_the_thread_tables_that_derived_builds(tmp_path: Path) -> None:
+    """The seam between the two modules: materialize, then index, then search.
+
+    Every other test here builds the thread tables by hand. `run_pull` calls the real
+    `create_derived` first, and only mocks stand between the two in test_pipeline, so
+    without this nothing checks that the pair actually works together.
+    """
+    path = tmp_path / "composed.duckdb"
+    con = duckdb.connect(str(path))
+    _create_schema(con)
+    con.executemany(
+        "INSERT INTO github.issues VALUES (?,?,?,?,?)",
+        [(1001, 1, "a quiet title", "an unremarkable body", "i1")],
+    )
+    con.executemany(
+        "INSERT INTO github.conversation_comments VALUES (?,?,?,?)",
+        [(3101, _api("issues", 1), "the zzyzx only ever appears in this comment", _d(5))],
+    )
+    con.close()
+
+    create_derived(path)
+    create_search_indexes(path)
+
+    # Findable only if the thread table concatenated the comment and the index read it.
+    assert [number for number, _ in _search(path, "issue_threads", "zzyzx")] == [1]

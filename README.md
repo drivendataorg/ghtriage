@@ -66,7 +66,7 @@ ghtriage schema --table issue_activity
 ghtriage query "SELECT number, title, state FROM issues LIMIT 5"
 ghtriage query "SELECT count(*) AS n FROM issues" --format json
 ghtriage query "SELECT number, title FROM issue_activity WHERE state = 'open' AND first_non_author_comment_at IS NULL"
-ghtriage query "SELECT number, title, score FROM (SELECT *, fts_github_issue_threads.match_bm25(id, 'cache invalidation') AS score FROM issue_threads) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 5"
+ghtriage query "SELECT number, title, round(score, 2) AS score FROM (SELECT *, fts_github_issue_threads.match_bm25(id, 'cache invalidation') AS score FROM issue_threads) t JOIN issue_activity USING (number) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 5"
 ```
 
 ### Exit codes
@@ -135,7 +135,7 @@ Search a thread table to find related issues and pull requests; search a comment
 Each index lives in a schema named for its table — `fts_github_issues`, `fts_github_issue_threads` — and exposes `match_bm25(id, 'query')`:
 
 ```bash
-ghtriage query "SELECT number, title, score FROM (SELECT *, fts_github_issue_threads.match_bm25(id, 'timeout uploading large files') AS score FROM issue_threads) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10"
+ghtriage query "SELECT number, title, round(score, 2) AS score FROM (SELECT *, fts_github_issue_threads.match_bm25(id, 'timeout uploading large files') AS score FROM issue_threads) t JOIN issue_activity USING (number) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10"
 ```
 
 Run `ghtriage schema` for the indexes your database actually holds, with their columns and document counts. Things worth knowing:

@@ -249,3 +249,12 @@ def test_get_full_text_indexes_reads_columns_from_the_catalog(cwd_with_index: Pa
         )
 
     assert get_full_text_indexes(cwd=cwd_with_index)[0].columns == ["title", "body"]
+
+
+def test_get_full_text_indexes_skips_an_unreadable_index(cwd_with_index: Path) -> None:
+    """One malformed index must not take down the whole schema listing."""
+    db_path = cwd_with_index / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE SCHEMA fts_github_ghost")
+
+    assert [index.table for index in get_full_text_indexes(cwd=cwd_with_index)] == ["issues"]

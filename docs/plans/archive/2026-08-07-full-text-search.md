@@ -535,7 +535,7 @@ ghtriage pull --full
 ghtriage schema
 ghtriage schema --table issues
 ghtriage schema --table issue_threads
-ghtriage query "SELECT number, title, round(score,2) AS score FROM (SELECT *, fts_github_issue_threads.match_bm25(id, 'authentication credentials') AS score FROM issue_threads) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10"
+ghtriage query "SELECT number, title, round(score,2) AS score FROM (SELECT *, fts_github_issue_threads.match_bm25(id, 'authentication credentials') AS score FROM issue_threads) t JOIN issue_activity USING (number) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10"
 ghtriage query "SELECT number, title FROM (SELECT *, fts_github_issues.match_bm25(id, 'cache directory') AS score FROM issue_activity) WHERE score IS NOT NULL AND state = 'open' ORDER BY score DESC"
 ghtriage pull    # incremental; confirm indexes and thread tables survive and stay consistent
 ghtriage query "SELECT count(*) FROM issue_threads"

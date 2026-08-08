@@ -1425,8 +1425,12 @@ def test_create_derived_skips_thread_table_when_base_lacks_the_document_key(
 
     create_derived(db)
 
-    assert "issue_threads" not in [name for (name,) in rows(db, "SHOW TABLES")]
-    assert "skipping table issue_threads" in capsys.readouterr().err
+    assert rows(
+        db,
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_schema = 'github' AND table_name = 'issue_threads'",
+    ) == [(0,)]
+    assert "issues has no id column yet" in capsys.readouterr().err
 
 
 def test_create_derived_thread_tables_carry_what_the_indexer_declares(db: Path) -> None:

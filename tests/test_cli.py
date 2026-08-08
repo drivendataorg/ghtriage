@@ -2,6 +2,7 @@ import csv
 import io
 import json
 from pathlib import Path
+import re
 
 import duckdb
 import pytest
@@ -312,9 +313,9 @@ def test_schema_listing_shows_full_text_indexes(cwd_with_index: Path, monkeypatc
     assert rc == 0
     assert "Full-text search indexes" in out
     assert "fts_github_issues.match_bm25" in out
-    # The index's own columns and document count, not the declaration's.
-    assert "title" in out
-    assert "2" in out
+    # The index's own row: columns and document count as built, not as declared.
+    # Matched together so neither can be satisfied by text elsewhere in the output.
+    assert re.search(r"issues\s*\|\s*id\s*\|\s*title\s*\|\s*2\b", out)
 
 
 def test_schema_listing_omits_index_block_when_there_are_none(
@@ -347,8 +348,7 @@ def test_schema_table_details_shows_the_index(cwd_with_index: Path, monkeypatch,
 
     out = capsys.readouterr().out
     assert rc == 0
-    assert "fts_github_issues.match_bm25(id, 'query')" in out
-    assert "title" in out
+    assert "fts_github_issues.match_bm25(id, 'query') over title (2 documents)" in out
 
 
 def test_schema_table_details_omits_index_line_for_unindexed_table(

@@ -18,7 +18,7 @@ import sys
 
 import duckdb
 
-from ghtriage.derived import present_columns, present_tables
+from ghtriage.derived import DERIVED, present_columns, present_tables
 
 # table -> (document key column, indexed text columns)
 INDEXES: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -42,12 +42,14 @@ def _key_is_usable(con: duckdb.DuckDBPyConnection, table: str, key_column: str) 
     `create_fts_index` validates nothing: rows sharing a key all report the first one's
     score, and a NULL key scores NULL forever. Both are silent, so they are checked here
     and turned into a visible skip.
+
+    One comparison covers both: `count(DISTINCT ...)` skips NULLs, so a NULL key shows up
+    the same way a duplicate does -- as a shortfall against `count(*)`.
     """
-    total, distinct, nulls = con.execute(
-        f"SELECT count(*), count(DISTINCT {key_column}), "  # noqa: S608
-        f"count(*) FILTER (WHERE {key_column} IS NULL) FROM github.{table}"
+    total, distinct = con.execute(
+        f"SELECT count(*), count(DISTINCT {key_column}) FROM github.{table}"  # noqa: S608
     ).fetchone()
-    return nulls == 0 and total == distinct
+    return total == distinct
 
 
 def create_search_indexes(db_path: Path) -> None:
@@ -70,14 +72,21 @@ def create_search_indexes(db_path: Path) -> None:
         print(f"Warning: full-text index creation failed: {exc}", file=sys.stderr)
 
 
+def _drop_index(con: duckdb.DuckDBPyConnection, table: str) -> None:
+    """Remove any index from an earlier pull, so a skip leaves nothing behind."""
+    con.execute(f'DROP SCHEMA IF EXISTS "{index_schema(table)}" CASCADE')
+
+
 def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) -> None:
     key_column, columns = INDEXES[table]
     if table not in present:
+        built_here = " (built by `derived`, which runs first)" if table in DERIVED else ""
         print(
-            f"Note: skipping full-text index for {table}; the table is not present yet"
-            f" (derived tables are built by `derived`, which runs first).",
+            f"Note: skipping full-text index for {table}; "
+            f"the table is not present yet{built_here}.",
             file=sys.stderr,
         )
+        _drop_index(con, table)
         return
     try:
         available = present_columns(con, table)
@@ -87,6 +96,7 @@ def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) ->
                 f"key column {key_column} is not present.",
                 file=sys.stderr,
             )
+            _drop_index(con, table)
             return
         # dlt does not materialize a column that never received data, so index what is
         # actually there. The column set is reported by `schema` rather than assumed.
@@ -96,6 +106,7 @@ def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) ->
                 f"Note: skipping full-text index for {table}; no text columns are present.",
                 file=sys.stderr,
             )
+            _drop_index(con, table)
             return
         if not _key_is_usable(con, table, key_column):
             print(
@@ -103,6 +114,7 @@ def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) ->
                 f"{key_column} is not unique and non-null, which would score rows wrongly.",
                 file=sys.stderr,
             )
+            _drop_index(con, table)
             return
         quoted = ", ".join(f"'{column}'" for column in indexed)
         con.execute(

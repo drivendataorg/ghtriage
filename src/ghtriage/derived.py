@@ -247,7 +247,7 @@ LEFT JOIN reviewer_agg rv ON rv._dlt_parent_id = p._dlt_id
 
 ISSUE_THREADS_SQL = r"""
 WITH issues_padded AS (
-    -- See views.py on padding: the declared types must match what dlt produces.
+    -- See issues_padded above: the declared types must match what dlt produces.
     SELECT * FROM github.issues
     UNION ALL BY NAME
     SELECT NULL::VARCHAR AS title, NULL::VARCHAR AS body WHERE false
@@ -621,9 +621,15 @@ def create_derived(db_path: Path) -> None:
 def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) -> None:
     spec = DERIVED[name]
     kind = spec.kind.lower()
-    if spec.base not in present or not set(spec.requires) <= present_columns(con, spec.base):
+    if spec.base not in present:
         print(
             f"Note: skipping {kind} {name}; source table {spec.base} is not present yet.",
+            file=sys.stderr,
+        )
+        return
+    if missing := sorted(set(spec.requires) - present_columns(con, spec.base)):
+        print(
+            f"Note: skipping {kind} {name}; {spec.base} has no {', '.join(missing)} column yet.",
             file=sys.stderr,
         )
         return
