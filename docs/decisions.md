@@ -192,9 +192,11 @@ are one kind of thing to a user and now to the code: one registry, one build pat
 **`full_text_search` depends on `derived` having run, and that is not treated as a hazard.**
 Rejected: defending the ordering with structure. Materialize, then index is how indexing works
 everywhere; a maintainer arrives knowing it. The mechanism that makes a mis-ordering survivable
-rather than silent is that nothing is left behind it cannot vouch for: a derived table that was not
-rebuilt this pull is dropped, and an index whose table is absent is dropped in turn, so a search
-errors on a missing schema instead of scoring the previous pull's text. `run_pull` pins the order, a test pins
+rather than silent is that a pull leaves behind nothing it cannot vouch for: a derived table that
+was not rebuilt is dropped, and an index whose table is absent is dropped in turn, so a search
+errors on a missing schema instead of scoring the previous pull's text. That holds for a pull that
+reaches the derive step; one that dies before it leaves the previous derived state in place, which
+needs a stamp against `_dlt_loads` to detect rather than an error path. `run_pull` pins the order, a test pins
 `run_pull`, and `create_search_indexes` states the precondition. See the 2026-08-07 entry "Thread
 tables are materialized, not views" for why they are tables at all.
 

@@ -53,8 +53,8 @@ def _key_is_usable(con: duckdb.DuckDBPyConnection, table: str, key_column: str) 
 def create_search_indexes(db_path: Path) -> None:
     """Create or replace every declared full-text index over the tables as they stand.
 
-    Raises if the database cannot be opened or the extension cannot be loaded. A table
-    that cannot be indexed is warned about and its index dropped, leaving the rest built.
+    Raises if the database cannot be opened or probed. A table that cannot be indexed is
+    warned about and its index dropped, leaving the rest built.
     """
     with duckdb.connect(str(db_path)) as con:
         present = present_tables(con)

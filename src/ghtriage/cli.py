@@ -160,10 +160,8 @@ def _print_index_block(indexes: list[FullTextIndex]) -> None:
     key = example.key_column or "id"
     print()
     print("Search a table by scoring its key column against its own index:")
-    print("  SELECT * FROM (")
-    print(f"      SELECT *, fts_github_{example.table}.match_bm25({key}, 'search terms') AS score")
-    print(f"      FROM {example.table}")
-    print("  ) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10")
+    print(f"  SELECT *, fts_github_{example.table}.match_bm25({key}, 'search terms') AS score")
+    print(f"  FROM {example.table} WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10")
     print()
     print("The macro is keyed on the document id, not bound to its table, so it also works")
     print("from any view carrying that id. An id the index does not hold scores NULL, so")

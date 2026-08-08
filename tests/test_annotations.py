@@ -356,12 +356,10 @@ def test_fetch_and_annotate_applies_comments_from_spec(annotated_db: Path) -> No
     assert column_comments["state"] == "Either 'open' or 'closed'."
 
 
-def test_fetch_and_annotate_swallows_errors(
-    annotated_db: Path, capsys: pytest.CaptureFixture
-) -> None:
-    """If fetch_spec raises, fetch_and_annotate prints a warning but does not propagate."""
-    with patch("ghtriage.annotations.fetch_spec", side_effect=RuntimeError("network error")):
+def test_fetch_and_annotate_propagates_errors(annotated_db: Path) -> None:
+    """Whether a pull survives this is `run_pull`'s call, so the failure has to reach it."""
+    with (
+        patch("ghtriage.annotations.fetch_spec", side_effect=RuntimeError("network error")),
+        pytest.raises(RuntimeError, match="network error"),
+    ):
         fetch_and_annotate(annotated_db)
-
-    captured = capsys.readouterr()
-    assert "schema annotation failed" in captured.err

@@ -339,9 +339,37 @@ class Derived:
     sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
+# What each slot must carry for the real table to be used instead of the stand-in:
+# exactly the columns the SQL reads from it.
+_COMMENT_FACTS = ("user__login", "user__type", "created_at")
+_CONVERSATION = ("issue_url", *_COMMENT_FACTS)
+_REVIEW = ("pull_request_url", *_COMMENT_FACTS)
+_LABELS = ("_dlt_parent_id", "name")
+_LOGINS = ("_dlt_parent_id", "login")
+
 DERIVED: dict[str, Derived] = {
-    "issue_activity": Derived("VIEW", "issues", ISSUE_ACTIVITY_SQL),
-    "pull_request_activity": Derived("VIEW", "pull_requests", PULL_REQUEST_ACTIVITY_SQL),
+    "issue_activity": Derived(
+        "VIEW",
+        "issues",
+        ISSUE_ACTIVITY_SQL,
+        sources={
+            "conversation_comments": _CONVERSATION,
+            "issues__labels": _LABELS,
+            "issues__assignees": _LOGINS,
+        },
+    ),
+    "pull_request_activity": Derived(
+        "VIEW",
+        "pull_requests",
+        PULL_REQUEST_ACTIVITY_SQL,
+        sources={
+            "conversation_comments": _CONVERSATION,
+            "review_comments": _REVIEW,
+            "pull_requests__labels": _LABELS,
+            "pull_requests__assignees": _LOGINS,
+            "pull_requests__requested_reviewers": _LOGINS,
+        },
+    ),
     "issue_threads": Derived(
         "TABLE",
         "issues",

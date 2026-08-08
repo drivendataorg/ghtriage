@@ -1527,3 +1527,19 @@ def test_create_derived_survives_a_probe_failure_on_one_object(
     assert table_exists(db, "pull_request_threads")
     assert not table_exists(db, "issue_threads")
     assert "probe failed" in capsys.readouterr().err
+
+
+def test_create_derived_view_degrades_when_a_comment_column_is_missing(db: Path) -> None:
+    """Present but missing a column the view reads is not the same as absent.
+
+    dlt does not materialize a column that never received data, so a repository whose
+    commenters have all deleted their accounts has no `user__login`. The thread tables
+    already degrade on that; the views used to be lost entirely.
+    """
+    with duckdb.connect(str(db)) as con:
+        con.execute("ALTER TABLE github.conversation_comments DROP COLUMN user__login")
+
+    create_derived(db)
+
+    assert rows(db, "SELECT count(*) FROM github.issue_activity") == [(7,)]
+    assert rows(db, "SELECT DISTINCT comment_count FROM github.issue_activity") == [(0,)]

@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+import sys
 
 import duckdb
 
@@ -138,9 +139,11 @@ def get_full_text_indexes(cwd: str | Path | None = None) -> list[FullTextIndex]:
                     ).fetchall()
                 ]
                 count = conn.execute(f'SELECT count(*) FROM "{schema}".docs').fetchone()[0]
-            except Exception:
+            except Exception as exc:
                 # An index whose catalog tables cannot be read is not reportable, but it
-                # must not take the rest of `ghtriage schema` down with it.
+                # must not take the rest of `ghtriage schema` down with it. Said out loud,
+                # because otherwise it is indistinguishable from one never built.
+                print(f"Warning: could not read index {schema}: {exc}", file=sys.stderr)
                 continue
             declared = INDEXES.get(table)
             indexes.append(

@@ -66,7 +66,7 @@ ghtriage schema --table issue_activity
 ghtriage query "SELECT number, title, state FROM issues LIMIT 5"
 ghtriage query "SELECT count(*) AS n FROM issues" --format json
 ghtriage query "SELECT number, title FROM issue_activity WHERE state = 'open' AND first_non_author_comment_at IS NULL"
-ghtriage query "SELECT number, title, round(score, 2) AS score FROM (SELECT *, fts_github_issue_threads.match_bm25(id, 'cache invalidation') AS score FROM issue_threads) t JOIN issue_activity USING (number) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 5"
+ghtriage query "SELECT number, title, round(fts_github_issue_threads.match_bm25(id, 'cache invalidation'), 2) AS score FROM issue_activity WHERE score IS NOT NULL ORDER BY score DESC LIMIT 5"
 ```
 
 ### Exit codes
@@ -135,13 +135,13 @@ Search a thread table to find related issues and pull requests; search a comment
 Each index lives in a schema named for its table — `fts_github_issues`, `fts_github_issue_threads` — and exposes `match_bm25(id, 'query')`:
 
 ```bash
-ghtriage query "SELECT number, title, round(score, 2) AS score FROM (SELECT *, fts_github_issue_threads.match_bm25(id, 'timeout uploading large files') AS score FROM issue_threads) t JOIN issue_activity USING (number) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10"
+ghtriage query "SELECT number, title, round(fts_github_issue_threads.match_bm25(id, 'timeout uploading large files'), 2) AS score FROM issue_activity WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10"
 ```
 
 Run `ghtriage schema` for the indexes your database actually holds, with their columns and document counts. Things worth knowing:
 
-- **The score function is keyed on the document id, not bound to its table.** Both derived views carry `id`, so you can search and filter on derived facts in one query with no join: `SELECT * FROM (SELECT *, fts_github_issues.match_bm25(id, 'windows path') AS score FROM issue_activity) WHERE score IS NOT NULL AND state = 'open'`.
+- **The score function is keyed on the document id, not bound to its table.** Both derived views carry `id`, so one relation gives you search and derived facts together — the example above searches whole threads while selecting from `issue_activity`. Filter on both at once: `SELECT number, title FROM issue_activity WHERE fts_github_issues.match_bm25(id, 'windows path') IS NOT NULL AND state = 'open'`.
 - **Pairing a table with the wrong index almost always returns nothing rather than an error.** An id the index does not hold simply scores `NULL`, so a search that comes back empty may be a wrong index name rather than an empty repository. Almost, because GitHub ids are unique per object type rather than globally: a colliding id scores against the wrong document instead.
 - **Digits are not indexed.** The tokenizer strips them, so searching `404` finds nothing. Use `LIKE` or `regexp_matches` for exact codes, versions, and identifiers.
 - **Terms are OR-ed and stemmed by default.** `'azure credential'` matches documents containing either word, and `renaming` matches `rename`. Pass `conjunctive := 1` to require every term.
-- **Indexes are rebuilt from scratch on every pull**, so they are exactly as fresh as the data. On a repository with ~2,500 documents this adds about a third of a second to a pull and about 35% to the database file.
+- **Indexes are rebuilt from scratch on every pull.** On a repository with ~2,500 documents this adds about a third of a second to a pull and about 35% to the database file.
