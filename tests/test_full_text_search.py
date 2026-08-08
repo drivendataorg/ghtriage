@@ -4,14 +4,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from ghtriage.full_text_search import (
-    INDEXES,
-    THREAD_COLUMN_DOCS,
-    THREAD_TABLE_DOCS,
-    THREAD_TABLES,
-    create_search_indexes,
-    index_schema,
-)
+from ghtriage.full_text_search import INDEXES, create_search_indexes, index_schema
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -81,7 +74,6 @@ def _populate(con: duckdb.DuckDBPyConnection) -> None:
     con.executemany(
         "INSERT INTO github.conversation_comments VALUES (?,?,?,?)",
         [
-            # Deliberately inserted newest-first: thread text must sort these.
             (3102, _api("issues", 3), "second word about it", _d(9)),
             (3101, _api("issues", 3), "the segfault reproduces for me", _d(5)),
             (3103, _api("issues", 1), "confirmed on my machine", _d(6)),
@@ -94,6 +86,16 @@ def _populate(con: duckdb.DuckDBPyConnection) -> None:
             (4201, _api("pulls", 11), "nit rename this variable", _d(8)),
         ],
     )
+    # Built by hand rather than by `derived`, so this file tests indexing on its own.
+    # What `derived` actually produces is pinned there, against the same INDEXES spec.
+    con.execute("""
+        CREATE TABLE github.issue_threads AS
+        SELECT id, number, concat_ws(E'\n', title, body) AS thread_text FROM github.issues
+    """)
+    con.execute("""
+        CREATE TABLE github.pull_request_threads AS
+        SELECT id, number, concat_ws(E'\n', title, body) AS thread_text FROM github.pull_requests
+    """)
 
 
 @pytest.fixture
@@ -130,7 +132,7 @@ def _schemas(db_path: Path) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Index creation over the raw tables
+# Index creation
 # ---------------------------------------------------------------------------
 
 
@@ -194,78 +196,6 @@ def test_search_returns_no_rows_when_nothing_matches(db: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Thread tables
-# ---------------------------------------------------------------------------
-
-
-def _thread_text(db_path: Path, table: str, number: int) -> str:
-    with duckdb.connect(str(db_path), read_only=True) as con:
-        return con.execute(
-            f"SELECT thread_text FROM github.{table} WHERE number = ?",  # noqa: S608
-            [number],
-        ).fetchone()[0]
-
-
-@pytest.mark.parametrize(
-    ("thread_table", "base_table"),
-    [("issue_threads", "issues"), ("pull_request_threads", "pull_requests")],
-)
-def test_thread_table_has_one_row_per_base_row(
-    db: Path, thread_table: str, base_table: str
-) -> None:
-    create_search_indexes(db)
-
-    with duckdb.connect(str(db), read_only=True) as con:
-        threads, base = con.execute(
-            f"SELECT (SELECT count(*) FROM github.{thread_table}), "  # noqa: S608
-            f"(SELECT count(*) FROM github.{base_table})"
-        ).fetchone()
-    assert threads == base
-
-
-def test_thread_text_includes_title_body_and_every_comment(db: Path) -> None:
-    create_search_indexes(db)
-
-    text = _thread_text(db, "issue_threads", 3)
-
-    assert "quiet issue" in text
-    assert "nothing to see here" in text
-    assert "the segfault reproduces for me" in text
-    assert "second word about it" in text
-
-
-def test_thread_text_orders_comments_oldest_first(db: Path) -> None:
-    create_search_indexes(db)
-
-    text = _thread_text(db, "issue_threads", 3)
-
-    assert text.index("the segfault reproduces for me") < text.index("second word about it")
-
-
-def test_thread_text_is_title_and_body_when_there_are_no_comments(db: Path) -> None:
-    create_search_indexes(db)
-
-    assert _thread_text(db, "issue_threads", 4) == "no comments here\nlonely body"
-
-
-def test_pull_request_thread_includes_both_comment_channels(db: Path) -> None:
-    """Conversation and review comments live in different tables; a corpus wants both."""
-    create_search_indexes(db)
-
-    text = _thread_text(db, "pull_request_threads", 11)
-
-    assert "reviewed the patch" in text
-    assert "nit rename this variable" in text
-
-
-def test_thread_search_finds_a_term_that_appears_only_in_a_comment(db: Path) -> None:
-    """Issue 3 never says 'segfault' in its own title or body."""
-    create_search_indexes(db)
-
-    assert 3 in [number for number, _ in _search(db, "issue_threads", "segfault")]
-
-
-# ---------------------------------------------------------------------------
 # Where match_bm25 can be called from
 # ---------------------------------------------------------------------------
 
@@ -307,56 +237,8 @@ def test_key_from_another_table_scores_no_rows(db: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Documentation and idempotence
+# Idempotence
 # ---------------------------------------------------------------------------
-
-
-def test_applies_table_and_column_comments(db: Path) -> None:
-    create_search_indexes(db)
-
-    with duckdb.connect(str(db), read_only=True) as con:
-        table_comment = con.execute(
-            "SELECT comment FROM duckdb_tables() "
-            "WHERE schema_name = 'github' AND table_name = 'issue_threads'"
-        ).fetchone()[0]
-        column_comment = con.execute(
-            "SELECT comment FROM duckdb_columns() WHERE schema_name = 'github' "
-            "AND table_name = 'issue_threads' AND column_name = 'thread_text'"
-        ).fetchone()[0]
-
-    assert table_comment == THREAD_TABLE_DOCS["issue_threads"]
-    assert column_comment == THREAD_COLUMN_DOCS["issue_threads"]["thread_text"]
-
-
-def test_reapplies_comments_after_replace(db: Path) -> None:
-    """CREATE OR REPLACE TABLE drops comments, exactly as CREATE OR REPLACE VIEW does."""
-    create_search_indexes(db)
-    create_search_indexes(db)
-
-    with duckdb.connect(str(db), read_only=True) as con:
-        comment = con.execute(
-            "SELECT comment FROM duckdb_tables() "
-            "WHERE schema_name = 'github' AND table_name = 'issue_threads'"
-        ).fetchone()[0]
-
-    assert comment == THREAD_TABLE_DOCS["issue_threads"]
-
-
-def test_thread_docs_match_thread_columns(db: Path) -> None:
-    """Every column has exactly one doc, and no doc outlives its column."""
-    create_search_indexes(db)
-
-    with duckdb.connect(str(db), read_only=True) as con:
-        for name in THREAD_TABLES:
-            columns = {
-                row[0]
-                for row in con.execute(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_schema = 'github' AND table_name = ?",
-                    [name],
-                ).fetchall()
-            }
-            assert columns == set(THREAD_COLUMN_DOCS[name]), name
 
 
 def test_is_idempotent(db: Path) -> None:
@@ -424,41 +306,6 @@ def test_skips_table_when_no_text_column_is_present(db: Path) -> None:
     create_search_indexes(db)
 
     assert index_schema("conversation_comments") not in _schemas(db)
-
-
-def test_thread_table_degrades_when_comment_table_is_missing(db: Path) -> None:
-    _drop(db, "DROP TABLE github.conversation_comments")
-
-    create_search_indexes(db)
-
-    assert _thread_text(db, "issue_threads", 3) == "quiet issue\nnothing to see here"
-    assert index_schema("issue_threads") in _schemas(db)
-
-
-def test_thread_table_degrades_when_comment_body_column_is_missing(db: Path) -> None:
-    """The table is present but carries no text, which is not the same as absent."""
-    _drop(db, "ALTER TABLE github.conversation_comments DROP COLUMN body")
-
-    create_search_indexes(db)
-
-    assert _thread_text(db, "issue_threads", 3) == "quiet issue\nnothing to see here"
-
-
-def test_thread_table_degrades_when_base_body_column_is_missing(db: Path) -> None:
-    _drop(db, "ALTER TABLE github.issues DROP COLUMN body")
-
-    create_search_indexes(db)
-
-    assert _thread_text(db, "issue_threads", 4) == "no comments here"
-
-
-def test_skips_thread_table_when_base_table_is_missing(db: Path) -> None:
-    _drop(db, "DROP TABLE github.pull_requests")
-
-    create_search_indexes(db)
-
-    assert index_schema("pull_request_threads") not in _schemas(db)
-    assert index_schema("issue_threads") in _schemas(db)
 
 
 def test_skips_table_when_key_column_is_missing(db: Path) -> None:

@@ -5,6 +5,10 @@ Implements [#13](https://github.com/jayqi/ghtriage/issues/13). Builds on the der
 [that plan](/docs/plans/archive/2026-08-06-derived-activity-views.md) for the view machinery this
 one reuses.
 
+> Note: `views.py` was merged into `derived.py` shortly after this plan landed, so the module
+> names below describe the state at the time. See the 2026-08-08 entry in
+> [the decision log](/docs/decisions.md).
+
 ## Context
 
 Finding related content is a high-value triage primitive: duplicate issues, prior discussions of the

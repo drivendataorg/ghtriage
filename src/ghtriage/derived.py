@@ -1,11 +1,19 @@
-"""Derived SQL views over the raw dlt tables, recreated on every pull.
+"""Derived objects over the raw dlt tables, rebuilt on every pull.
 
-The views are SQL, written as SQL: each is one template string that reads
-top-to-bottom as a query, so it can be pasted straight into `ghtriage query`
-when debugging. Column documentation lives in a separate dict, mirroring the
-shape `annotations.py` uses for the OpenAPI descriptions.
+Two views of pre-joined activity facts, and two tables holding one full-text
+document per issue and per pull request. They are one kind of thing -- fully
+recomputable from the raw tables, never a source of truth -- and differ only in
+that DuckDB cannot index a view, so the search corpora have to be materialized.
+
+Each is SQL, written as SQL: one template string that reads top-to-bottom as a
+query, so it can be pasted straight into `ghtriage query` when debugging. Column
+documentation lives in a separate dict, mirroring the shape `annotations.py`
+uses for the OpenAPI descriptions.
+
+Materialize before indexing: `full_text_search` indexes what this module builds.
 """
 
+from dataclasses import dataclass, field
 from pathlib import Path
 import sys
 
@@ -237,6 +245,56 @@ LEFT JOIN reviewer_agg rv ON rv._dlt_parent_id = p._dlt_id
 """
 
 
+ISSUE_THREADS_SQL = r"""
+WITH issues_padded AS (
+    -- See views.py on padding: the declared types must match what dlt produces.
+    SELECT * FROM github.issues
+    UNION ALL BY NAME
+    SELECT NULL::VARCHAR AS title, NULL::VARCHAR AS body WHERE false
+),
+comments AS (
+    SELECT
+        TRY_CAST(regexp_extract(issue_url, '/(\d+)$', 1) AS BIGINT) AS number,
+        string_agg(body, E'\n' ORDER BY created_at) AS comment_text
+    FROM {conversation_comments}
+    GROUP BY 1
+)
+SELECT i.id, i.number, concat_ws(E'\n', i.title, i.body, c.comment_text) AS thread_text
+FROM issues_padded i
+LEFT JOIN comments c ON c.number = i.number
+"""
+
+PULL_REQUEST_THREADS_SQL = r"""
+WITH pulls_padded AS (
+    SELECT * FROM github.pull_requests
+    UNION ALL BY NAME
+    SELECT NULL::VARCHAR AS title, NULL::VARCHAR AS body WHERE false
+),
+comments AS (
+    -- Both channels, interleaved by time. The split that pull_request_activity keeps for
+    -- counts is a fact about engagement; a search corpus just wants all the words.
+    SELECT number, string_agg(body, E'\n' ORDER BY created_at) AS comment_text
+    FROM (
+        SELECT
+            TRY_CAST(regexp_extract(issue_url, '/(\d+)$', 1) AS BIGINT) AS number,
+            body,
+            created_at
+        FROM {conversation_comments}
+        UNION ALL
+        SELECT
+            TRY_CAST(regexp_extract(pull_request_url, '/(\d+)$', 1) AS BIGINT) AS number,
+            body,
+            created_at
+        FROM {review_comments}
+    )
+    GROUP BY number
+)
+SELECT p.id, p.number, concat_ws(E'\n', p.title, p.body, c.comment_text) AS thread_text
+FROM pulls_padded p
+LEFT JOIN comments c ON c.number = p.number
+"""
+
+
 # Stand-ins for source tables dlt has not created yet. Each must match the shape
 # the CTE around it selects, so the substitution is invisible downstream.
 EMPTY: dict[str, str] = {
@@ -267,17 +325,52 @@ EMPTY: dict[str, str] = {
     ),
 }
 
-VIEWS: dict[str, str] = {
-    "issue_activity": ISSUE_ACTIVITY_SQL,
-    "pull_request_activity": PULL_REQUEST_ACTIVITY_SQL,
+
+@dataclass(frozen=True)
+class Derived:
+    """One derived object, and what has to exist before it can be built."""
+
+    kind: str  # VIEW or TABLE -- a table only because DuckDB cannot index a view
+    base: str  # base table that must exist for the object to mean anything
+    sql: str
+    requires: tuple[str, ...] = ()  # columns the base table must carry
+    # slot -> columns the real table must carry to be used instead of the stand-in.
+    # A comment table present but text-less is not the same as an absent one.
+    sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+DERIVED: dict[str, Derived] = {
+    "issue_activity": Derived("VIEW", "issues", ISSUE_ACTIVITY_SQL),
+    "pull_request_activity": Derived("VIEW", "pull_requests", PULL_REQUEST_ACTIVITY_SQL),
+    "issue_threads": Derived(
+        "TABLE",
+        "issues",
+        ISSUE_THREADS_SQL,
+        requires=("id",),
+        sources={"conversation_comments": ("issue_url", "body", "created_at")},
+    ),
+    "pull_request_threads": Derived(
+        "TABLE",
+        "pull_requests",
+        PULL_REQUEST_THREADS_SQL,
+        requires=("id",),
+        sources={
+            "conversation_comments": ("issue_url", "body", "created_at"),
+            "review_comments": ("pull_request_url", "body", "created_at"),
+        },
+    ),
 }
 
-BASE_TABLES: dict[str, str] = {
-    "issue_activity": "issues",
-    "pull_request_activity": "pull_requests",
-}
-
-VIEW_DOCS: dict[str, str] = {
+DERIVED_DOCS: dict[str, str] = {
+    "issue_threads": (
+        "Derived table: one full-text document per issue, holding its title, body, and every "
+        "conversation comment on it. Rebuilt and re-indexed on every pull. Search it to find "
+        "whether a topic has been discussed before; join back on number for the facts."
+    ),
+    "pull_request_threads": (
+        "Derived table: one full-text document per pull request, holding its title, body, and "
+        "every conversation and review comment on it. Rebuilt and re-indexed on every pull."
+    ),
     "issue_activity": (
         "Derived view: one row per issue with pre-joined comment activity, labels, and assignees."
     ),
@@ -287,7 +380,35 @@ VIEW_DOCS: dict[str, str] = {
     ),
 }
 
-VIEW_COLUMN_DOCS: dict[str, dict[str, str]] = {
+DERIVED_COLUMN_DOCS: dict[str, dict[str, str]] = {
+    "issue_threads": {
+        "id": (
+            "Pass-through of issues.id. The full-text document key: pass it to "
+            "fts_github_issue_threads.match_bm25 to score this document."
+        ),
+        "number": "Pass-through of issues.number. Join key to issues and issue_activity.",
+        "thread_text": (
+            "The issue's title, body, and every conversation comment on it, oldest first, "
+            "newline-joined. Comment authors and timestamps are not included; join the raw "
+            "tables for those."
+        ),
+    },
+    "pull_request_threads": {
+        "id": (
+            "Pass-through of pull_requests.id. The full-text document key: pass it to "
+            "fts_github_pull_request_threads.match_bm25 to score this document."
+        ),
+        "number": (
+            "Pass-through of pull_requests.number. Join key to pull_requests and "
+            "pull_request_activity."
+        ),
+        "thread_text": (
+            "The pull request's title, body, and every comment on it -- conversation and inline "
+            "review alike, interleaved oldest first and newline-joined. The two channels are "
+            "kept separate in pull_request_activity, where the distinction is a fact about "
+            "engagement rather than an input to a tokenizer."
+        ),
+    },
     "issue_activity": {
         "id": (
             "Pass-through of issues.id. The full-text document key: pass it to "
@@ -462,44 +583,63 @@ def present_tables(con: duckdb.DuckDBPyConnection) -> set[str]:
     }
 
 
-def render_slots(sql: str, present: set[str]) -> str:
+def present_columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
+    return {
+        row[0]
+        for row in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'github' AND table_name = ?",
+            [table],
+        ).fetchall()
+    }
+
+
+def render_slots(sql: str, usable: set[str]) -> str:
     """Fill each optional-source slot with the real table or an empty stand-in."""
     return sql.format(
-        **{slot: (f"github.{slot}" if slot in present else empty) for slot, empty in EMPTY.items()}
+        **{slot: (f"github.{slot}" if slot in usable else empty) for slot, empty in EMPTY.items()}
     )
 
 
-def create_views(db_path: Path) -> None:
-    """Create or replace every derived view in the `github` schema.
+def create_derived(db_path: Path) -> None:
+    """Create or replace every derived view and table in the `github` schema.
 
     Best-effort, and deliberately guarded at the outermost level: the connection and
     the schema probe are inside the try too, so a locked or unreadable database warns
-    rather than failing the pull. This runs before annotation, so raising here would
-    skip that as well.
+    rather than failing the pull. This runs before indexing and annotation, so raising
+    here would skip both.
     """
     try:
         with duckdb.connect(str(db_path)) as con:
             present = present_tables(con)
-            for name, sql in VIEWS.items():
-                _create_one(con, name, sql, present)
+            for name in DERIVED:
+                _create_one(con, name, present)
     except Exception as exc:
-        print(f"Warning: view creation failed: {exc}", file=sys.stderr)
+        print(f"Warning: derived object creation failed: {exc}", file=sys.stderr)
 
 
-def _create_one(con: duckdb.DuckDBPyConnection, name: str, sql: str, present: set[str]) -> None:
-    base = BASE_TABLES[name]
-    if base not in present:
+def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) -> None:
+    spec = DERIVED[name]
+    kind = spec.kind.lower()
+    if spec.base not in present or not set(spec.requires) <= present_columns(con, spec.base):
         print(
-            f"Note: skipping view {name}; source table {base} is not present yet.",
+            f"Note: skipping {kind} {name}; source table {spec.base} is not present yet.",
             file=sys.stderr,
         )
         return
     try:
-        con.execute(f"CREATE OR REPLACE VIEW github.{name} AS {render_slots(sql, present)}")
+        usable = {
+            slot
+            for slot in EMPTY
+            if slot in present and set(spec.sources.get(slot, ())) <= present_columns(con, slot)
+        }
+        con.execute(
+            f"CREATE OR REPLACE {spec.kind} github.{name} AS {render_slots(spec.sql, usable)}"
+        )
 
         # CREATE OR REPLACE drops comments, so they are reapplied every time.
-        con.execute(f"COMMENT ON VIEW github.{name} IS {quote_literal(VIEW_DOCS[name])}")
-        for column, doc in VIEW_COLUMN_DOCS[name].items():
+        con.execute(f"COMMENT ON {spec.kind} github.{name} IS {quote_literal(DERIVED_DOCS[name])}")
+        for column, doc in DERIVED_COLUMN_DOCS[name].items():
             con.execute(f"COMMENT ON COLUMN github.{name}.{column} IS {quote_literal(doc)}")
     except Exception as exc:
-        print(f"Warning: could not create view {name}: {exc}", file=sys.stderr)
+        print(f"Warning: could not create {kind} {name}: {exc}", file=sys.stderr)

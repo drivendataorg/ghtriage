@@ -172,3 +172,24 @@ mechanism the rest of the project relies on cannot document them. The raw syntax
 Rejected: continuing to inherit duckdb through `dlt[duckdb]`, whose floor is `duckdb>=0.9`. The
 project has needed ≥0.10.2 since `COMMENT ON` arrived in #11, and the full-text behavior here is
 verified from 1.2 onward. Inheriting a floor nothing tests is how a dependency range ends up lying.
+
+## 2026-08-08 — Derived objects in one module
+
+Follow-up reorganization after [#13](https://github.com/jayqi/ghtriage/issues/13); no behavior
+changed.
+
+**Views and thread tables live together in `derived.py`, built by one `create_derived`.**
+Rejected: keeping the thread tables with the indexer that consumes them, on the grounds that
+building and indexing in one function cannot be mis-ordered. But `_create_one` and
+`_build_thread_table` were the same function twice — same skip-if-base-missing, same
+`CREATE OR REPLACE` through the slot renderer, same comment reapplication, same catch-and-warn —
+and sharing helpers between two modules would have left both copies of the loop. The four objects
+are one kind of thing to a user and now to the code: one registry, one build path parameterized by
+`VIEW` or `TABLE`, one docs convention, one drift guard covering all four.
+
+**`full_text_search` depends on `derived` having run, and that is not treated as a hazard.**
+Rejected: defending the ordering with structure. Materialize, then index is how indexing works
+everywhere; a maintainer arrives knowing it, and violating it fails loudly the first time — the
+index is skipped and any search errors on a missing schema. `run_pull` pins the order, a test pins
+`run_pull`, and `create_search_indexes` states the precondition. See the 2026-08-07 entry "Thread
+tables are materialized, not views" for why they are tables at all.

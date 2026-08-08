@@ -98,41 +98,33 @@ The directory manages its own `.gitignore` so that only `config.toml` can be com
 | `conversation_comments` | Comments on the main thread of the issue or pull request. |
 | `review_comments` | Inline comments on a pull request's diff. |
 
-Two more tables are derived from these on every pull, for full-text search:
-
-| Table | Contents |
-|---|---|
-| `issue_threads` | One searchable document per issue: title, body, and all its conversation comments. |
-| `pull_request_threads` | One searchable document per pull request, including review comments. |
-
 Nested arrays become child tables named with a double-underscore, e.g., `issues__labels`, and can be joined to their parent on `_dlt_parent_id = _dlt_id`.
 
 If any entity has zero records, then no table will be created rather than an empty. Run `ghtriage schema` for the authoritative list of what your
 database actually holds.
 
-### Derived views
+### Derived tables and views
 
-Every `ghtriage pull` also builds derived views that pre-compute facts and joins that are useful for triaging.
+Every `ghtriage pull` also builds four derived objects. All are rebuilt each time the data refreshes, all are recomputable from the raw tables — a convenience layer, never a source of truth — and every column carries a description you can read with `ghtriage schema --table <name>`.
 
 - **`issue_activity`** — one row per issue, with comment counts and timestamps, labels, and assignees already joined.
 - **`pull_request_activity`** — one row per pull request, the same plus review-comment facts and pending review requests.
+- **`issue_threads`** — one full-text document per issue: its title, body, and every conversation comment on it, oldest first.
+- **`pull_request_threads`** — one full-text document per pull request, folding in both conversation and review comments.
 
-They are rebuilt each time the data refreshes, and every column carries a description you can read with `ghtriage schema --table <view>`. Details about them worth knowing:
+The thread tables exist to be searched — see [Full-text search](#full-text-search).
 
-- **A repository with zero issues or zero pull requests will not get the respective view.** A view is built from a table, and there is no table until at least one record of that kind has been pulled. Query `ghtriage schema` to see which views exist rather than assuming both do.
-- **Pull requests have two separate comment channels.** GitHub's issue-comments endpoint carries conversation comments on both issues and pull requests, while the pull-comments endpoint carries only inline review comments — which is why the tables are named `conversation_comments` and `review_comments` rather than after the endpoints they come from. `pull_request_activity` exposes both as separate columns rather than adding them together, because a PR can have a long discussion and no code review, or the reverse.
-- **Bot activity is split out, not filtered.** `comment_count` counts everything, and `non_bot_comment_count` counts only accounts GitHub does not type as `Bot`. Whether a bot comment means the issue got attention is a judgment, so both numbers are available and neither is imposed. The same pattern applies to review comments and participants.
+Details worth knowing:
 
-Everything in these views is recomputable from the raw tables — they are a convenience layer, never a source of truth.
+- **A repository with zero issues or zero pull requests will not get the respective view or thread table.** Each is built from a base table, and there is no table until at least one record of that kind has been pulled. Query `ghtriage schema` to see what exists rather than assuming.
+- **Pull requests have two separate comment channels.** GitHub's issue-comments endpoint carries conversation comments on both issues and pull requests; the pull-comments endpoint carries only inline review comments. `pull_request_activity` keeps them as separate columns — a PR can have a long discussion and no code review, or the reverse — while `pull_request_threads` folds them together.
+- **Bot activity is split out, not filtered.** `comment_count` counts everything; `non_bot_comment_count` counts only accounts GitHub does not type as `Bot`. Subtract for the bot count. The same pattern applies to review comments and participants.
 
 ### Full-text search
 
-Every `ghtriage pull` also builds BM25 full-text indexes, so "has this been reported before?" is a ranked query rather than a scan. Indexes are built over `issues` and `pull_requests` (title and body), both comment tables (body), and two derived tables:
+Every pull also builds BM25 full-text indexes, so "has this been reported before?" is a ranked query rather than a scan. Indexed are `issues` and `pull_requests` (title and body), both comment tables (body), and the two thread tables (`thread_text`).
 
-- **`issue_threads`** — one document per issue: its title, body, and every conversation comment on it.
-- **`pull_request_threads`** — one document per pull request, folding in both conversation and review comments.
-
-The thread tables are what make duplicate-hunting work. Searching the comment tables directly returns comment rows that have to be traced back to their issue, and it scores each comment separately, so a thread that circles a topic across several replies loses to a single comment that says it all. Searching a thread returns ranked issues.
+Search a thread table to find related issues and pull requests; search a comment table to find individual comments. The comment indexes score each comment on its own, so a thread that circles a topic across several replies ranks below a single comment that says it all.
 
 Each index lives in a schema named for its table — `fts_github_issues`, `fts_github_issue_threads` — and exposes `match_bm25(id, 'query')`:
 
@@ -144,7 +136,7 @@ Run `ghtriage schema` for the indexes your database actually holds, with their c
 
 - **The score function is keyed on the document id, not bound to its table.** Both derived views carry `id`, so you can search and filter on derived facts in one query with no join: `SELECT * FROM (SELECT *, fts_github_issues.match_bm25(id, 'windows path') AS score FROM issue_activity) WHERE score IS NOT NULL AND state = 'open'`.
 - **Pairing a table with the wrong index returns nothing rather than an error.** An id the index does not hold simply scores `NULL`. If a search comes back empty, check the index name before concluding the repository has nothing.
-- **Digits are not indexed.** The tokenizer strips them, so searching `404` finds nothing. Exact codes, versions, and identifiers are what `LIKE` and `regexp_matches` are for; full-text search complements those rather than replacing them.
+- **Digits are not indexed.** The tokenizer strips them, so searching `404` finds nothing. Use `LIKE` or `regexp_matches` for exact codes, versions, and identifiers.
 - **Terms are OR-ed and stemmed by default.** `'azure credential'` matches documents containing either word, and `renaming` matches `rename`. Pass `conjunctive := 1` to require every term.
 - **Indexes are rebuilt from scratch on every pull**, so they are exactly as fresh as the data. On a repository with ~2,500 documents this adds about a third of a second to a pull and about 35% to the database file.
 
