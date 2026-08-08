@@ -89,6 +89,12 @@ ghtriage query "SELECT number, title, score FROM (SELECT *, fts_github_issue_thr
 
 The directory manages its own `.gitignore` so that only `config.toml` can be committed to version control; the token, database, and pull state are automatically excluded.
 
+Some behaviors to be aware of:
+
+- **The database is a snapshot.** It reflects GitHub as of the last `pull` and never updates on its own. Use `status` to see what repository is in the database and how fresh the data is.
+- **Pulls are incremental.** Re-running `pull` fetches only what changed since the last pull, so it is cheap to run often. Use `--full` to delete the database and rebuild from scratch.
+- **The target repository is resolved automatically.** In order of precedence: the `--repo` flag, the default set in `.ghtriage/config.toml`, then the current repository's git `origin` remote.
+
 ### What gets pulled
 
 | Table | Contents |
@@ -105,7 +111,7 @@ database actually holds.
 
 ### Derived tables and views
 
-Every `ghtriage pull` also builds four derived objects. All are rebuilt each time the data refreshes, all are recomputable from the raw tables — a convenience layer, never a source of truth — and every column carries a description you can read with `ghtriage schema --table <name>`.
+Every `ghtriage pull` also builds four derived objects. All are rebuilt each time the data refreshes, all are recomputable from the raw tables — a convenience layer — and every column carries a description you can read with `ghtriage schema --table <name>`.
 
 - **`issue_activity`** — one row per issue, with comment counts and timestamps, labels, and assignees already joined.
 - **`pull_request_activity`** — one row per pull request, the same plus review-comment facts and pending review requests.
@@ -139,9 +145,3 @@ Run `ghtriage schema` for the indexes your database actually holds, with their c
 - **Digits are not indexed.** The tokenizer strips them, so searching `404` finds nothing. Use `LIKE` or `regexp_matches` for exact codes, versions, and identifiers.
 - **Terms are OR-ed and stemmed by default.** `'azure credential'` matches documents containing either word, and `renaming` matches `rename`. Pass `conjunctive := 1` to require every term.
 - **Indexes are rebuilt from scratch on every pull**, so they are exactly as fresh as the data. On a repository with ~2,500 documents this adds about a third of a second to a pull and about 35% to the database file.
-
-Some behaviors to be aware of:
-
-- **The database is a snapshot.** It reflects GitHub as of the last `pull` and never updates on its own. Use `status` to see what repository is in the database and how fresh the data is.
-- **Pulls are incremental.** Re-running `pull` fetches only what changed since the last pull, so it is cheap to run often. Use `--full` to delete the database and rebuild from scratch.
-- **The target repository is resolved automatically.** In order of precedence: the `--repo` flag, the default set in `.ghtriage/config.toml`, then the current repository's git `origin` remote.
