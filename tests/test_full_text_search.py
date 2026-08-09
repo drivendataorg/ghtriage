@@ -318,10 +318,10 @@ def test_skips_table_when_key_is_not_unique(db: Path, capsys: pytest.CaptureFixt
     """A duplicate key makes every sharing row report the first one's score, silently."""
     _drop(db, "INSERT INTO github.issues VALUES (1001, 5, 'duplicate id', 'body', 'i5')")
 
-    create_search_indexes(db)
+    failures = create_search_indexes(db)
 
     assert index_schema("issues") not in _schemas(db)
-    assert "issues" in capsys.readouterr().err
+    assert [f for f in failures if "issues" in f]
 
 
 def test_skips_table_when_key_is_null(db: Path) -> None:
@@ -350,11 +350,11 @@ def test_swallows_errors_from_one_table(
 
     monkeypatch.setattr(full_text_search, "_key_is_usable", explode_for_issues)
 
-    create_search_indexes(db)
+    failures = create_search_indexes(db)
 
     assert index_schema("pull_requests") in _schemas(db)
     assert index_schema("issues") not in _schemas(db)
-    assert "index build exploded" in capsys.readouterr().err
+    assert [f for f in failures if "index build exploded" in f]
 
 
 def test_skipping_a_rebuild_drops_the_previous_index(db: Path) -> None:

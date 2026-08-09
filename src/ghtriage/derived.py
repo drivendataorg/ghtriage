@@ -629,41 +629,35 @@ def render_slots(sql: str, usable: set[str]) -> str:
     )
 
 
-def create_derived(db_path: Path) -> None:
+def create_derived(db_path: Path) -> list[str]:
     """Create or replace every derived view and table in the `github` schema.
 
     Raises if the database cannot be opened or probed. An individual object that cannot
-    be built is warned about and dropped, leaving the rest intact.
+    be built is dropped and returned as a message, leaving the rest intact. An object
+    with no source table yet is skipped quietly -- that is not a failure.
     """
+    failures = []
     with duckdb.connect(str(db_path)) as con:
         present = present_tables(con)
         for name in DERIVED:
-            _create_one(con, name, present)
+            if (failure := _create_one(con, name, present)) is not None:
+                failures.append(failure)
+    return failures
 
 
-DERIVED_TABLES: tuple[str, ...] = tuple(
-    name for name, spec in DERIVED.items() if spec.kind == "TABLE"
-)
-
-
-def drop_derived_tables(db_path: Path) -> None:
-    """Drop every derived table. Views are left in place."""
+def drop_derived_objects(db_path: Path) -> None:
+    """Drop every derived view and table."""
     with duckdb.connect(str(db_path)) as con:
-        for name in DERIVED_TABLES:
-            con.execute(f"DROP TABLE IF EXISTS github.{name}")
+        for name in DERIVED:
+            _drop_one(con, name)
 
 
-def _drop_if_stale(con: duckdb.DuckDBPyConnection, name: str) -> None:
-    """Drop `name` if it is a table, leaving views in place.
-
-    A table that was not rebuilt still holds the previous pull's rows. A view holds a
-    query, so it answers from current data whatever age its definition is.
-    """
-    if DERIVED[name].kind == "TABLE":
-        con.execute(f"DROP TABLE IF EXISTS github.{name}")
+def _drop_one(con: duckdb.DuckDBPyConnection, name: str) -> None:
+    """Drop `name`, whichever kind it is."""
+    con.execute(f"DROP {DERIVED[name].kind} IF EXISTS github.{name}")
 
 
-def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) -> None:
+def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) -> str | None:
     spec = DERIVED[name]
     kind = spec.kind.lower()
     # Everything is inside the guard, catalog probes included: an object that cannot be
@@ -675,16 +669,16 @@ def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) ->
                 f"Note: skipping {kind} {name}; source table {spec.base} is not present yet.",
                 file=sys.stderr,
             )
-            _drop_if_stale(con, name)
-            return
+            _drop_one(con, name)
+            return None
         if missing := sorted(set(spec.requires) - present_columns(con, spec.base)):
             print(
                 f"Note: skipping {kind} {name}; "
                 f"{spec.base} has no {', '.join(missing)} column yet.",
                 file=sys.stderr,
             )
-            _drop_if_stale(con, name)
-            return
+            _drop_one(con, name)
+            return None
         usable = {
             slot
             for slot in EMPTY
@@ -699,5 +693,6 @@ def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) ->
         for column, doc in DERIVED_COLUMN_DOCS[name].items():
             con.execute(f"COMMENT ON COLUMN github.{name}.{column} IS {quote_literal(doc)}")
     except Exception as exc:
-        print(f"Warning: could not create {kind} {name}: {exc}", file=sys.stderr)
-        _drop_if_stale(con, name)
+        _drop_one(con, name)
+        return f"could not create {kind} {name}: {exc}"
+    return None

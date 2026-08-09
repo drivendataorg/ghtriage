@@ -50,16 +50,20 @@ def _key_is_usable(con: duckdb.DuckDBPyConnection, table: str, key_column: str) 
     return total == distinct
 
 
-def create_search_indexes(db_path: Path) -> None:
+def create_search_indexes(db_path: Path) -> list[str]:
     """Create or replace every declared full-text index over the tables as they stand.
 
-    Raises if the database cannot be opened or probed. A table that cannot be indexed is
-    warned about and its index dropped, leaving the rest built.
+    Raises if the database cannot be opened or probed. A table that cannot be indexed has
+    its index dropped and is returned as a message, leaving the rest built. A table that
+    is not there yet is skipped quietly -- that is not a failure.
     """
+    failures = []
     with duckdb.connect(str(db_path)) as con:
         present = present_tables(con)
         for table in INDEXES:
-            _index_one(con, table, present)
+            if (failure := _index_one(con, table, present)) is not None:
+                failures.append(failure)
+    return failures
 
 
 def _drop_index(con: duckdb.DuckDBPyConnection, table: str) -> None:
@@ -67,7 +71,7 @@ def _drop_index(con: duckdb.DuckDBPyConnection, table: str) -> None:
     con.execute(f'DROP SCHEMA IF EXISTS "{index_schema(table)}" CASCADE')
 
 
-def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) -> None:
+def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) -> str | None:
     key_column, columns = INDEXES[table]
     try:
         if table not in present:
@@ -78,7 +82,7 @@ def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) ->
                 file=sys.stderr,
             )
             _drop_index(con, table)
-            return
+            return None
         available = present_columns(con, table)
         if key_column not in available:
             print(
@@ -87,7 +91,7 @@ def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) ->
                 file=sys.stderr,
             )
             _drop_index(con, table)
-            return
+            return None
         # dlt does not materialize a column that never received data, so index what is
         # actually there. The column set is reported by `schema` rather than assumed.
         indexed = [column for column in columns if column in available]
@@ -97,19 +101,18 @@ def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) ->
                 file=sys.stderr,
             )
             _drop_index(con, table)
-            return
+            return None
         if not _key_is_usable(con, table, key_column):
-            print(
-                f"Warning: skipping full-text index for {table}; "
-                f"{key_column} is not unique and non-null, which would score rows wrongly.",
-                file=sys.stderr,
-            )
             _drop_index(con, table)
-            return
+            return (
+                f"skipped the full-text index for {table}: {key_column} is not unique and "
+                f"non-null, which would score rows wrongly"
+            )
         quoted = ", ".join(f"'{column}'" for column in indexed)
         con.execute(
             f"PRAGMA create_fts_index('github.{table}', '{key_column}', {quoted}, overwrite=1)"
         )
     except Exception as exc:
-        print(f"Warning: could not build full-text index for {table}: {exc}", file=sys.stderr)
         _drop_index(con, table)
+        return f"could not build the full-text index for {table}: {exc}"
+    return None

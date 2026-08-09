@@ -12,7 +12,7 @@ from ghtriage.derived import (
     DERIVED_DOCS,
     EMPTY,
     create_derived,
-    drop_derived_tables,
+    drop_derived_objects,
 )
 
 # ---------------------------------------------------------------------------
@@ -741,8 +741,8 @@ def test_every_format_slot_has_an_empty_relation() -> None:
             assert slot in EMPTY, slot
 
 
-def test_create_derived_swallows_errors(db: Path, capsys: pytest.CaptureFixture) -> None:
-    """A broken definition warns and does not stop the others."""
+def test_create_derived_reports_a_broken_definition_without_stopping(db: Path) -> None:
+    """A broken definition is reported and does not stop the others."""
     broken = dict(DERIVED)
     broken["broken_view"] = derived_module.Derived(
         "VIEW", "issues", "SELECT * FROM github.does_not_exist"
@@ -753,9 +753,9 @@ def test_create_derived_swallows_errors(db: Path, capsys: pytest.CaptureFixture)
         patch.dict(derived_module.DERIVED_DOCS, {"broken_view": "x"}),
         patch.dict(derived_module.DERIVED_COLUMN_DOCS, {"broken_view": {}}),
     ):
-        create_derived(db)
+        failures = create_derived(db)
 
-    assert "broken_view" in capsys.readouterr().err
+    assert [failure for failure in failures if "broken_view" in failure]
     assert rows(db, "SELECT count(*) FROM github.issue_activity") == [(7,)]
 
 
@@ -766,10 +766,10 @@ def test_create_derived_swallows_errors(db: Path, capsys: pytest.CaptureFixture)
 
 @pytest.fixture
 def unpadded_db(tmp_path: Path) -> Path:
-    """A repo whose issues have never been closed and never had a state reason.
+    """A repo whose issues have never been closed and whose pulls are all still open.
 
-    dlt creates columns as data arrives, so `state_reason` and `closed_at` do
-    not exist at all yet.
+    dlt creates columns as data arrives, so `state_reason`/`closed_at` on issues and
+    `draft`/`closed_at`/`merged_at` on pulls do not exist at all yet.
     """
     path = tmp_path / "unpadded.duckdb"
     con = duckdb.connect(str(path))
@@ -785,6 +785,18 @@ def unpadded_db(tmp_path: Path) -> Path:
     con.executemany(
         "INSERT INTO github.issues VALUES (?,?,?,?,?,?,?,?)",
         [(1, "never closed", "open", "alice", "User", _d(1), _d(1), "i1")],
+    )
+    con.execute("""
+        CREATE TABLE github.pull_requests (
+            number BIGINT, title VARCHAR, state VARCHAR,
+            user__login VARCHAR, user__type VARCHAR,
+            created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE,
+            _dlt_id VARCHAR
+        )
+    """)
+    con.executemany(
+        "INSERT INTO github.pull_requests VALUES (?,?,?,?,?,?,?,?)",
+        [(2, "never merged", "open", "bob", "User", _d(1), _d(1), "p2")],
     )
     con.close()
     return path
@@ -871,6 +883,7 @@ def test_view_types_match_spec_on_sparse_databases(
     create_derived(path)
 
     assert typed_columns(path, "issue_activity") == ISSUE_ACTIVITY_SPEC
+    assert typed_columns(path, "pull_request_activity") == PULL_ACTIVITY_SPEC
 
 
 # ---------------------------------------------------------------------------
@@ -1431,6 +1444,14 @@ def test_create_derived_thread_tables_carry_what_the_indexer_declares(db: Path) 
         assert {key_column, *text_columns} <= set(columns(db, name)), name
 
 
+def view_exists(db_path: Path, name: str) -> bool:
+    return rows(
+        db_path,
+        "SELECT count(*) FROM duckdb_views() "
+        f"WHERE schema_name = 'github' AND view_name = '{name}'",
+    ) == [(1,)]
+
+
 def table_exists(db_path: Path, name: str) -> bool:
     return rows(
         db_path,
@@ -1465,43 +1486,64 @@ def test_create_derived_drops_a_thread_table_whose_rebuild_raises(db: Path) -> N
     assert not table_exists(db, "issue_threads")
 
 
-def test_create_derived_keeps_a_view_it_can_no_longer_build(db: Path) -> None:
-    """Views are not dropped: one holds a query, not rows, so a failed replace leaves
-    current data behind an older definition rather than stale data behind a current one."""
-    create_derived(db)
+def test_create_derived_drops_a_view_it_can_no_longer_build(tmp_path: Path) -> None:
+    """A view is no safer to keep than a table: `render_slots` resolves each slot when
+    the view is built, so one built before a source table existed permanently queries an
+    empty stand-in and reports zeros while the real rows sit beside it."""
+    path = tmp_path / "young.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE SCHEMA github")
+    con.execute(
+        "CREATE TABLE github.issues (id BIGINT, number BIGINT, title VARCHAR, body VARCHAR, "
+        "state VARCHAR, user__login VARCHAR, user__type VARCHAR, "
+        "created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE, "
+        "_dlt_id VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO github.issues VALUES (1,1,'t','b','open','alice','User',now(),now(),'i1')"
+    )
+    con.close()
+    create_derived(path)  # no comment table yet, so the stand-in is baked in
 
+    with duckdb.connect(str(path)) as con:
+        con.execute(
+            "CREATE TABLE github.conversation_comments (id BIGINT, issue_url VARCHAR, "
+            "user__login VARCHAR, user__type VARCHAR, body VARCHAR, "
+            "created_at TIMESTAMP WITH TIME ZONE)"
+        )
+        con.execute(
+            f"INSERT INTO github.conversation_comments VALUES (9,'{_api('issues', 1)}',"
+            "'bob','User','hi',now())"
+        )
     broken = dict(DERIVED)
     broken["issue_activity"] = derived_module.Derived(
         "VIEW", "issues", "SELECT * FROM github.does_not_exist"
     )
     with patch.object(derived_module, "DERIVED", broken):
-        create_derived(db)
+        create_derived(path)
 
-    assert rows(db, "SELECT count(*) FROM github.issue_activity") == [(7,)]
+    assert not view_exists(path, "issue_activity")
 
 
-def test_drop_derived_tables_removes_tables_but_leaves_views(db: Path) -> None:
-    """For a pull whose derive step failed wholesale: whatever survived is of unknown age.
-
-    Views are spared for the same reason `_drop_if_stale` spares them -- a view holds a
-    query, so it answers from current data whatever its age.
-    """
+def test_drop_derived_objects_removes_views_and_tables(db: Path) -> None:
+    """For a pull whose derive step failed wholesale: everything is of unknown age."""
     create_derived(db)
 
-    drop_derived_tables(db)
+    drop_derived_objects(db)
 
     assert not table_exists(db, "issue_threads")
     assert not table_exists(db, "pull_request_threads")
-    assert rows(db, "SELECT count(*) FROM github.issue_activity") == [(7,)]
+    assert not view_exists(db, "issue_activity")
+    assert not view_exists(db, "pull_request_activity")
 
 
-def test_drop_derived_tables_is_a_no_op_when_they_were_never_built(tmp_path: Path) -> None:
+def test_drop_derived_objects_is_a_no_op_when_they_were_never_built(tmp_path: Path) -> None:
     path = tmp_path / "empty.duckdb"
     con = duckdb.connect(str(path))
     con.execute("CREATE SCHEMA github")
     con.close()
 
-    drop_derived_tables(path)  # must not raise
+    drop_derived_objects(path)  # must not raise
 
 
 def test_create_derived_survives_a_probe_failure_on_one_object(
@@ -1522,11 +1564,11 @@ def test_create_derived_survives_a_probe_failure_on_one_object(
 
     monkeypatch.setattr(derived_module, "present_columns", explode_for_issues)
 
-    create_derived(db)  # must not raise
+    failures = create_derived(db)  # must not raise
 
     assert table_exists(db, "pull_request_threads")
     assert not table_exists(db, "issue_threads")
-    assert "probe failed" in capsys.readouterr().err
+    assert [f for f in failures if "probe failed" in f]
 
 
 def test_create_derived_view_degrades_when_a_comment_column_is_missing(db: Path) -> None:

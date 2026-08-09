@@ -192,11 +192,14 @@ are one kind of thing to a user and now to the code: one registry, one build pat
 **`full_text_search` depends on `derived` having run, and that is not treated as a hazard.**
 Rejected: defending the ordering with structure. Materialize, then index is how indexing works
 everywhere; a maintainer arrives knowing it. The mechanism that makes a mis-ordering survivable
-rather than silent is that a pull leaves behind nothing it cannot vouch for: a derived table that
+rather than silent is that a pull leaves behind nothing it cannot vouch for: a derived object that
 was not rebuilt is dropped, and an index whose table is absent is dropped in turn, so a search
-errors on a missing schema instead of scoring the previous pull's text. That holds for a pull that
-reaches the derive step; one that dies before it leaves the previous derived state in place, which
-needs a stamp against `_dlt_loads` to detect rather than an error path. `run_pull` pins the order, a test pins
+errors on a missing relation instead of scoring the previous pull's text. Views are dropped too,
+not spared: `render_slots` resolves each slot when the object is built, so a view built before a
+source table existed goes on querying an empty stand-in and reporting zeros next to the real rows.
+That holds for a pull that reaches the derive step; one that dies before it leaves the previous
+derived state in place, which needs a stamp against `_dlt_loads` to detect rather than an error
+path. `run_pull` pins the order, a test pins
 `run_pull`, and `create_search_indexes` states the precondition. See the 2026-08-07 entry "Thread
 tables are materialized, not views" for why they are tables at all.
 
@@ -205,6 +208,7 @@ tables are materialized, not views" for why they are tables at all.
 Rejected: each builder guarding itself. A module swallowing its own failures is deciding what a
 pull is worth, which is the orchestrator's call — and `create_derived`'s guard used to justify
 itself in terms of what ran *after* it, which is a module reasoning about its callers. The builders
-now raise; `run_pull` collects a warning per failed step and exits 0, because the raw tables landed
-and they are what a pull is for. Per-object handling stays inside the builders: skipping an object
-with no source table yet is not a failure, and a young repository legitimately skips six.
+now raise, and return a message for any single object they could not build; `run_pull` collects
+both and exits 0, because the raw tables landed and they are what a pull is for. Only the skips stay
+inside the builders, as notes on stderr: an object with no source table yet is not a failure, and a
+young repository legitimately skips six.

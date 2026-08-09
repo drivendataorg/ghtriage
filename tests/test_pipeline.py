@@ -24,15 +24,22 @@ def _install_pipeline_mocks(monkeypatch):
     mock_write_meta = Mock()
     monkeypatch.setattr("ghtriage.pipeline._write_meta", mock_write_meta)
     call_order: list[str] = []
-    mock_create_derived = Mock(side_effect=lambda *_a, **_k: call_order.append("create_derived"))
+
+    def records(step: str, result=None):
+        """Note that the step ran, and return what the real one returns."""
+
+        def run(*_args, **_kwargs):
+            call_order.append(step)
+            return result
+
+        return run
+
+    # The two builders return a list of per-object failures; the others return nothing.
+    mock_create_derived = Mock(side_effect=records("create_derived", []))
     monkeypatch.setattr("ghtriage.pipeline.create_derived", mock_create_derived)
-    mock_create_search_indexes = Mock(
-        side_effect=lambda *_a, **_k: call_order.append("create_search_indexes")
-    )
+    mock_create_search_indexes = Mock(side_effect=records("create_search_indexes", []))
     monkeypatch.setattr("ghtriage.pipeline.create_search_indexes", mock_create_search_indexes)
-    mock_fetch_and_annotate = Mock(
-        side_effect=lambda *_a, **_k: call_order.append("fetch_and_annotate")
-    )
+    mock_fetch_and_annotate = Mock(side_effect=records("fetch_and_annotate"))
     monkeypatch.setattr("ghtriage.pipeline.fetch_and_annotate", mock_fetch_and_annotate)
 
     return (
@@ -315,14 +322,14 @@ def test_run_pull_survives_and_reports_a_failed_step(
     assert "boom" in warnings[0]
 
 
-def test_run_pull_drops_derived_tables_when_the_derive_step_fails(
+def test_run_pull_drops_derived_objects_when_the_derive_step_fails(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Left in place, they would be indexed as though they were current."""
     _install_pipeline_mocks(monkeypatch)
     monkeypatch.setattr("ghtriage.pipeline.create_derived", Mock(side_effect=RuntimeError("boom")))
     mock_drop = Mock()
-    monkeypatch.setattr("ghtriage.pipeline.drop_derived_tables", mock_drop)
+    monkeypatch.setattr("ghtriage.pipeline.drop_derived_objects", mock_drop)
     monkeypatch.chdir(tmp_path)
 
     run_pull(repo="owner/repo", token="t", full=False)
@@ -330,14 +337,38 @@ def test_run_pull_drops_derived_tables_when_the_derive_step_fails(
     mock_drop.assert_called_once_with(tmp_path / ".ghtriage" / "ghtriage.duckdb")
 
 
-def test_run_pull_does_not_drop_derived_tables_when_the_derive_step_succeeds(
+def test_run_pull_does_not_drop_derived_objects_when_the_derive_step_succeeds(
     tmp_path: Path, monkeypatch
 ) -> None:
     _install_pipeline_mocks(monkeypatch)
     mock_drop = Mock()
-    monkeypatch.setattr("ghtriage.pipeline.drop_derived_tables", mock_drop)
+    monkeypatch.setattr("ghtriage.pipeline.drop_derived_objects", mock_drop)
     monkeypatch.chdir(tmp_path)
 
     run_pull(repo="owner/repo", token="t", full=False)
 
     mock_drop.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("ghtriage.pipeline.create_derived", "could not create view issue_activity"),
+        ("ghtriage.pipeline.create_search_indexes", "could not build the full-text index"),
+    ],
+)
+def test_run_pull_reports_a_single_object_that_failed_to_build(
+    tmp_path: Path, monkeypatch, target: str, expected: str
+) -> None:
+    """One object failing is not a failed step, but it is still something to report.
+
+    Left only on stderr it would be invisible to `pull`'s exit path and to any caller
+    reading the return value.
+    """
+    _install_pipeline_mocks(monkeypatch)
+    monkeypatch.setattr(target, Mock(return_value=[expected]))
+    monkeypatch.chdir(tmp_path)
+
+    _load_info, warnings = run_pull(repo="owner/repo", token="t", full=False)
+
+    assert expected in warnings

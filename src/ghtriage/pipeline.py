@@ -9,7 +9,7 @@ import duckdb
 
 from ghtriage.annotations import fetch_and_annotate
 from ghtriage.config import get_db_path, get_pipelines_dir
-from ghtriage.derived import create_derived, drop_derived_tables
+from ghtriage.derived import create_derived, drop_derived_objects
 from ghtriage.full_text_search import create_search_indexes
 
 
@@ -178,19 +178,19 @@ def run_pull(
         warnings.append(f"metadata write failed: {exc}")
 
     try:
-        create_derived(db_path)
+        warnings.extend(create_derived(db_path))
     except Exception as exc:
         warnings.append(f"derived objects failed: {exc}")
         # Whatever survived from an earlier pull is now of unknown age. Removing it makes
         # the next search fail loudly rather than quietly answer from stale text, and
         # leaves the index step nothing to index.
         try:
-            drop_derived_tables(db_path)
+            drop_derived_objects(db_path)
         except Exception as exc:
-            warnings.append(f"dropping stale derived tables failed: {exc}")
+            warnings.append(f"dropping stale derived objects failed: {exc}")
 
     try:
-        create_search_indexes(db_path)
+        warnings.extend(create_search_indexes(db_path))
     except Exception as exc:
         warnings.append(f"full-text indexes failed: {exc}")
 
