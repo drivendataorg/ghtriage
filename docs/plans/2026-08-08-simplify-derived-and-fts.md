@@ -148,6 +148,15 @@ Consequences, all deletions:
   referenced in an object's SQL template must appear in its `sources` (parseable with
   `string.Formatter`), and vice versa.
 
+Where the declared types come from: they must match what dlt actually produces, because a
+mismatch coerces silently under `UNION ALL BY NAME` rather than erroring. The current padding
+CTEs and `EMPTY` dict hold already-vetted types for every column padded today; for columns newly
+declared under the every-column rule, take types from a real pulled database (`ghtriage schema
+<table>`) or the typed test fixtures — do not guess. Two easy-to-miss declarations: `_dlt_id` on
+the base tables and `_dlt_parent_id` on the child tables are read by the label/assignee/reviewer
+joins, so they are declared like any other column (both `VARCHAR`). The retained
+non-coercion tests are the backstop if a type is still wrong.
+
 Note the interaction with #13's decision that the views carry `id`: `id` is declared like any
 other column, so a sparse database still gets the full column set, unchanged.
 
@@ -224,6 +233,19 @@ id-collision speculation (a misuse nobody has made, defended in prose):
 The macro is keyed on the document id and is not bound to the indexed table, so it also works
 from any relation carrying that id. An id the index does not hold scores NULL.
 ```
+
+## Files changed
+
+| File | Change |
+|---|---|
+| `src/ghtriage/derived.py` | Spec 1: `render_source` combinator, `Derived.sources` as typed dicts, delete `EMPTY`/`render_slots`/`present_columns`/`requires`, slim `_create_one`; delete `drop_derived_objects` (spec 4) |
+| `src/ghtriage/full_text_search.py` | Specs 2–3: delete `_key_is_usable` and the column skip branches; `_index_one` becomes attempt-or-drop-and-warn (~50 lines total) |
+| `src/ghtriage/pipeline.py` | Spec 4: remove the drop cascade from `run_pull` |
+| `src/ghtriage/cli.py` | Spec 4: `--full` advice line after warnings; specs 5–6: `indexes[0]` example picker, drop `or "id"` fallbacks, trimmed prose |
+| `src/ghtriage/query.py` | Spec 5: declaration-driven `get_full_text_indexes`, `key_column: str` |
+| `tests/` | Per the disposition table below; no new test files |
+
+No new modules, no dependency changes, no CLI surface changes beyond output text.
 
 ## Test disposition
 
@@ -303,20 +325,18 @@ spiral does not restart:
   pull against a young/sparse repository to see the base-absent skips and the warning-advice
   line behave.
 
-## Implementation sequence
+## Ordering constraints and the closing sweep
 
-Red/green per `AGENTS.md`, one spec at a time — each is independently landable and leaves the
-suite green:
+Sequencing and commit granularity are the implementer's choice; red/green per `AGENTS.md`
+applies throughout, and the branch ends green. The only real ordering constraint: spec 5
+(declaration-driven index reporting) is sound only once spec 3 (all-or-nothing indexing) is in,
+because it relies on a present index matching its declaration exactly. Everything else is
+independent — spec 1 is merely the largest diff, not a prerequisite.
 
-1. Spec 1 (combinator) in `derived.py` + test retargeting. Largest diff, do it first and alone.
-2. Spec 3 (all-or-nothing indexing) in `full_text_search.py` + test pruning.
-3. Spec 2 (delete `_key_is_usable`, add the declaration test).
-4. Spec 4 (`run_pull` cascade removal, CLI advice line).
-5. Specs 5–6 (`query.py` reporting, `cli.py` prose and picker).
-6. Sweep: confirm the test-disposition table above matches what happened; update
-   `docs/decisions.md` if any spec shifted during implementation; move this plan to
-   `docs/plans/archive/` and fix the two links pointing at its pre-archive path (in
-   `docs/decisions.md` and the 2026-08-07 plan's header note).
+Close with a sweep: confirm the test-disposition table above matches what actually happened;
+update `docs/decisions.md` if any spec shifted during implementation; move this plan to
+`docs/plans/archive/` and fix the two links pointing at its pre-archive path (in
+`docs/decisions.md` and the 2026-08-07 plan's header note).
 
 ## Deferred
 
