@@ -9,6 +9,13 @@ one reuses.
 > names below describe the state at the time. See the 2026-08-08 entry in
 > [the decision log](/docs/decisions.md).
 
+> Note: the defensive machinery specified below — column-presence probing, indexing whichever
+> declared columns exist, the runtime key-uniqueness check, and the drop cascade in `run_pull` —
+> was simplified before this branch shipped. See
+> [the 2026-08-08 simplification plan](/docs/plans/2026-08-08-simplify-derived-and-fts.md), which
+> also sets the defensive-code policy those changes apply. The findings and measurements below
+> remain the evidence base and are not superseded.
+
 ## Context
 
 Finding related content is a high-value triage primitive: duplicate issues, prior discussions of the

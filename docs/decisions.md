@@ -136,7 +136,9 @@ than deriving it from content, so an edited row's `_dlt_id` changes on the pull 
 up — no good as a handle that outlives a pull. `id` is GitHub's permanent identifier, is dlt's merge
 key, and is a column agents already select. Uniqueness is the load-bearing part either way:
 `create_fts_index` validates nothing, and rows sharing a key all silently report the first one's
-score, which is why the key is checked before indexing rather than trusted.
+score. dlt's merge on `id` is what guarantees uniqueness, so a test pins that declaration on the
+source config rather than a runtime check re-verifying the loader on every pull (see the
+2026-08-08 section "Defensive-layer simplification").
 
 **Thread tables are materialized tables, not views.**
 Rejected: views, per the 2026-08-06 entry "Views, not materialized tables". That entry rejected
@@ -191,24 +193,58 @@ are one kind of thing to a user and now to the code: one registry, one build pat
 
 **`full_text_search` depends on `derived` having run, and that is not treated as a hazard.**
 Rejected: defending the ordering with structure. Materialize, then index is how indexing works
-everywhere; a maintainer arrives knowing it. The mechanism that makes a mis-ordering survivable
-rather than silent is that a pull leaves behind nothing it cannot vouch for: a derived object that
-was not rebuilt is dropped, and an index whose table is absent is dropped in turn, so a search
-errors on a missing relation instead of scoring the previous pull's text. Views are dropped too,
-not spared: `render_slots` resolves each slot when the object is built, so a view built before a
-source table existed goes on querying an empty stand-in and reporting zeros next to the real rows.
-That holds for a pull that reaches the derive step; one that dies before it leaves the previous
-derived state in place, which needs a stamp against `_dlt_loads` to detect rather than an error
-path. `run_pull` pins the order, a test pins
-`run_pull`, and `create_search_indexes` states the precondition. See the 2026-08-07 entry "Thread
-tables are materialized, not views" for why they are tables at all.
+everywhere; a maintainer arrives knowing it. `run_pull` pins the order, a test pins `run_pull`,
+and `create_search_indexes` states the precondition. What makes a failure survivable rather than
+silent is that neither module leaves behind an object it could not rebuild this pull: a derived
+object or index that cannot be built is dropped, so a later search errors on a missing relation
+instead of scoring the previous pull's text. See the 2026-08-07 entry "Thread tables are
+materialized, not views" for why they are tables at all.
 
 **Every step after the load is attempted, reported, and survived, and that decision lives in
 `run_pull`.**
 Rejected: each builder guarding itself. A module swallowing its own failures is deciding what a
-pull is worth, which is the orchestrator's call — and `create_derived`'s guard used to justify
-itself in terms of what ran *after* it, which is a module reasoning about its callers. The builders
-now raise, and return a message for any single object they could not build; `run_pull` collects
-both and exits 0, because the raw tables landed and they are what a pull is for. Only the skips stay
+pull is worth, which is the orchestrator's call. The builders raise, and return a message for any
+single object they could not build; `run_pull` collects both and exits 0, because the raw tables
+landed and they are what a pull is for. The CLI follows any warnings with a pointer at
+`ghtriage pull --full`, which is the recovery path for every post-load state. Only the skips stay
 inside the builders, as notes on stderr: an object with no source table yet is not a failure, and a
-young repository legitimately skips six.
+young repository legitimately skips several.
+
+## 2026-08-08 — Defensive-layer simplification
+
+Scope reduction of the #13 defensive machinery before it shipped — see
+[the plan](/docs/plans/2026-08-08-simplify-derived-and-fts.md) for the failure taxonomy and boundary
+rule these decisions apply, and for the review protocol that goes with them.
+
+**Absent upstream data is handled by one declaration-driven padding combinator, applied to every
+source a derived object reads — base tables included.**
+Rejected: four coexisting mechanisms — padding CTEs inside the SQL, a stand-in dict for absent
+tables, per-slot column probes deciding real-vs-stand-in, and `requires` tuples gating whole
+objects — each skip path needing its own drop logic, stderr note, and tests. Padding by
+`UNION ALL BY NAME` makes a missing column a non-event without probing, so the only remaining
+check is whether the base table exists at all. The 2026-08-06 decision that views degrade to
+typed NULLs and empty relations stands; this changes the mechanism, not the behavior.
+
+**A `sources` declaration lists every column the SQL reads, not just the ones dlt might omit.**
+Rejected: padding only observed-missing columns. Deciding which columns "might" be absent is a
+judgment renewed at every review; declaring all of them is mechanical, self-documenting, and
+padding an always-present column costs nothing.
+
+**No runtime key-uniqueness check before indexing.**
+Rejected: `_key_is_usable`, a per-pull full-table scan re-verifying what dlt's merge on `id`
+already guarantees. A broken merge key means the whole database is wrong, not just BM25 scores. A
+test pins `primary_key: id` + `write_disposition: merge` on every resource declaration instead —
+the layer that provides the guarantee is the layer that gets the test.
+
+**A full-text index covers all its declared columns, or is not built.**
+Rejected: indexing whichever declared columns happen to exist. A search that silently covers only
+`title` because `body` was absent returns plausible, wrong-by-omission results — the one failure
+class this project defends hardest against. A build over a missing column fails into the existing
+drop-and-warn path instead. This is also what lets `ghtriage schema` report indexes from the
+declaration: a present index always matches it exactly.
+
+**A post-load failure warns and advises `pull --full`; nothing is dropped beyond the object that
+failed.**
+Rejected: cascading `drop_derived_objects` when the derive step failed wholesale. The per-object
+paths already drop what they could not rebuild; the wholesale case leaves the user one known,
+cheap command from clean, and the CLI now says so next to the warnings.
