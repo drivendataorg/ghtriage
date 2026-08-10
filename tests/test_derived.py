@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import string
 from unittest.mock import patch
 
 import duckdb
@@ -10,9 +11,7 @@ from ghtriage.derived import (
     DERIVED,
     DERIVED_COLUMN_DOCS,
     DERIVED_DOCS,
-    EMPTY,
     create_derived,
-    drop_derived_objects,
 )
 
 # ---------------------------------------------------------------------------
@@ -732,20 +731,26 @@ def test_create_derived_substitutes_empty_relation_for_missing_source_table(
     ) == [(0, 0, None, None, [], [], 1)]
 
 
-def test_every_format_slot_has_an_empty_relation() -> None:
-    """Rendering must never raise KeyError on a repo missing an optional table."""
-    import re
+def test_every_source_slot_is_declared_and_every_declaration_is_used() -> None:
+    """The drift guard on the combinator, both ways.
 
-    for spec in DERIVED.values():
-        for slot in re.findall(r"\{(\w+)\}", spec.sql):
-            assert slot in EMPTY, slot
+    A slot with no declaration raises KeyError while rendering; a declaration with no
+    slot pads a table the SQL never reads, which reads as coverage it does not have.
+    """
+    for name, spec in DERIVED.items():
+        slots = {
+            field_name
+            for _, field_name, _, _ in string.Formatter().parse(spec.sql)
+            if field_name is not None
+        }
+        assert slots == set(spec.sources), name
 
 
 def test_create_derived_reports_a_broken_definition_without_stopping(db: Path) -> None:
     """A broken definition is reported and does not stop the others."""
     broken = dict(DERIVED)
     broken["broken_view"] = derived_module.Derived(
-        "VIEW", "issues", "SELECT * FROM github.does_not_exist"
+        "VIEW", "issues", "SELECT * FROM github.does_not_exist", {}
     )
 
     with (
@@ -817,7 +822,7 @@ def test_create_derived_column_set_identical_with_and_without_optional_sources(
     for path in (db, sparse_db, unpadded_db):
         create_derived(path)
 
-    # Types, not just names: a mistyped EMPTY stand-in changes a sparse repo's
+    # Types, not just names: a mistyped `sources` declaration changes a sparse repo's
     # column types while every name still matches.
     assert typed_columns(sparse_db, "issue_activity") == typed_columns(db, "issue_activity")
     assert typed_columns(unpadded_db, "issue_activity") == typed_columns(db, "issue_activity")
@@ -876,8 +881,8 @@ def test_padding_does_not_coerce_existing_column_values(tmp_path: Path) -> None:
 def test_view_types_match_spec_on_sparse_databases(
     request: pytest.FixtureRequest, fixture: str
 ) -> None:
-    """Type conformance must hold where padding and EMPTY stand-ins are load-bearing,
-    not only on a fully populated database."""
+    """Type conformance must hold where the padding combinator is load-bearing -- an
+    absent table and an absent column alike -- not only on a fully populated database."""
     path = request.getfixturevalue(fixture)
 
     create_derived(path)
@@ -1395,42 +1400,6 @@ def test_create_derived_thread_table_degrades_when_comment_table_missing(tmp_pat
     assert thread_text(path, "issue_threads", 1) == "only issue\nits body"
 
 
-def test_create_derived_thread_table_degrades_when_comment_body_column_missing(db: Path) -> None:
-    """Present but text-less is not the same as absent, and only the stand-in handles both."""
-    with duckdb.connect(str(db)) as con:
-        con.execute("ALTER TABLE github.conversation_comments DROP COLUMN body")
-
-    create_derived(db)
-
-    assert thread_text(db, "issue_threads", 1) == "has replies\nbody of issue 1"
-
-
-def test_create_derived_thread_table_degrades_when_base_body_column_missing(db: Path) -> None:
-    with duckdb.connect(str(db)) as con:
-        con.execute("ALTER TABLE github.issues DROP COLUMN body")
-
-    create_derived(db)
-
-    assert thread_text(db, "issue_threads", 2) == "silent"
-
-
-def test_create_derived_skips_thread_table_when_base_lacks_the_document_key(
-    db: Path, capsys: pytest.CaptureFixture
-) -> None:
-    """`id` is the document key; without it the table would build but never index."""
-    with duckdb.connect(str(db)) as con:
-        con.execute("ALTER TABLE github.issues DROP COLUMN id")
-
-    create_derived(db)
-
-    assert rows(
-        db,
-        "SELECT count(*) FROM information_schema.tables "
-        "WHERE table_schema = 'github' AND table_name = 'issue_threads'",
-    ) == [(0,)]
-    assert "issues has no id column yet" in capsys.readouterr().err
-
-
 def test_create_derived_thread_tables_carry_what_the_indexer_declares(db: Path) -> None:
     """The seam with `full_text_search`: it indexes these columns on these tables."""
     from ghtriage.full_text_search import INDEXES
@@ -1478,7 +1447,7 @@ def test_create_derived_drops_a_thread_table_whose_rebuild_raises(db: Path) -> N
 
     broken = dict(DERIVED)
     broken["issue_threads"] = derived_module.Derived(
-        "TABLE", "issues", "SELECT * FROM github.does_not_exist", requires=("id",)
+        "TABLE", "issues", "SELECT * FROM github.does_not_exist", {}
     )
     with patch.object(derived_module, "DERIVED", broken):
         create_derived(db)
@@ -1487,9 +1456,9 @@ def test_create_derived_drops_a_thread_table_whose_rebuild_raises(db: Path) -> N
 
 
 def test_create_derived_drops_a_view_it_can_no_longer_build(tmp_path: Path) -> None:
-    """A view is no safer to keep than a table: `render_slots` resolves each slot when
+    """A view is no safer to keep than a table: `render_source` resolves each slot when
     the view is built, so one built before a source table existed permanently queries an
-    empty stand-in and reports zeros while the real rows sit beside it."""
+    empty relation and reports zeros while the real rows sit beside it."""
     path = tmp_path / "young.duckdb"
     con = duckdb.connect(str(path))
     con.execute("CREATE SCHEMA github")
@@ -1517,71 +1486,9 @@ def test_create_derived_drops_a_view_it_can_no_longer_build(tmp_path: Path) -> N
         )
     broken = dict(DERIVED)
     broken["issue_activity"] = derived_module.Derived(
-        "VIEW", "issues", "SELECT * FROM github.does_not_exist"
+        "VIEW", "issues", "SELECT * FROM github.does_not_exist", {}
     )
     with patch.object(derived_module, "DERIVED", broken):
         create_derived(path)
 
     assert not view_exists(path, "issue_activity")
-
-
-def test_drop_derived_objects_removes_views_and_tables(db: Path) -> None:
-    """For a pull whose derive step failed wholesale: everything is of unknown age."""
-    create_derived(db)
-
-    drop_derived_objects(db)
-
-    assert not table_exists(db, "issue_threads")
-    assert not table_exists(db, "pull_request_threads")
-    assert not view_exists(db, "issue_activity")
-    assert not view_exists(db, "pull_request_activity")
-
-
-def test_drop_derived_objects_is_a_no_op_when_they_were_never_built(tmp_path: Path) -> None:
-    path = tmp_path / "empty.duckdb"
-    con = duckdb.connect(str(path))
-    con.execute("CREATE SCHEMA github")
-    con.close()
-
-    drop_derived_objects(path)  # must not raise
-
-
-def test_create_derived_survives_a_probe_failure_on_one_object(
-    db: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-) -> None:
-    """A catalog probe that fails must cost only its own object.
-
-    It used to sit outside the per-object guard, so it propagated out of create_derived
-    after other objects had already been rebuilt -- leaving the caller unable to tell
-    which ones were current, and forcing it to drop them all.
-    """
-    real_probe = derived_module.present_columns
-
-    def explode_for_issues(con, table):
-        if table == "issues":
-            raise RuntimeError("probe failed")
-        return real_probe(con, table)
-
-    monkeypatch.setattr(derived_module, "present_columns", explode_for_issues)
-
-    failures = create_derived(db)  # must not raise
-
-    assert table_exists(db, "pull_request_threads")
-    assert not table_exists(db, "issue_threads")
-    assert [f for f in failures if "probe failed" in f]
-
-
-def test_create_derived_view_degrades_when_a_comment_column_is_missing(db: Path) -> None:
-    """Present but missing a column the view reads is not the same as absent.
-
-    dlt does not materialize a column that never received data, so a repository whose
-    commenters have all deleted their accounts has no `user__login`. The thread tables
-    already degrade on that; the views used to be lost entirely.
-    """
-    with duckdb.connect(str(db)) as con:
-        con.execute("ALTER TABLE github.conversation_comments DROP COLUMN user__login")
-
-    create_derived(db)
-
-    assert rows(db, "SELECT count(*) FROM github.issue_activity") == [(7,)]
-    assert rows(db, "SELECT DISTINCT comment_count FROM github.issue_activity") == [(0,)]

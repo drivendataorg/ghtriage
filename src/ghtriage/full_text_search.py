@@ -18,9 +18,12 @@ import sys
 
 import duckdb
 
-from ghtriage.derived import DERIVED, present_columns, present_tables
+from ghtriage.derived import DERIVED, present_tables
 
-# table -> (document key column, indexed text columns)
+# table -> (document key column, indexed text columns). Authoritative: an index either
+# covers exactly this, or is not there. `id` is unique and non-null because dlt merges
+# on it (pinned by test_every_indexed_resource_merges_on_id), so nothing re-checks that
+# here -- a broken merge key is a wrong database, not a wrong BM25 score.
 INDEXES: dict[str, tuple[str, tuple[str, ...]]] = {
     "issues": ("id", ("title", "body")),
     "pull_requests": ("id", ("title", "body")),
@@ -34,20 +37,6 @@ INDEXES: dict[str, tuple[str, tuple[str, ...]]] = {
 def index_schema(table: str) -> str:
     """The schema DuckDB generates for a `github`-schema table's index."""
     return f"fts_github_{table}"
-
-
-def _key_is_usable(con: duckdb.DuckDBPyConnection, table: str, key_column: str) -> bool:
-    """Whether `key_column` can serve as a document key.
-
-    `create_fts_index` validates nothing: rows sharing a key all report the first one's
-    score, and a NULL key scores NULL forever, both silently.
-    """
-    # One comparison covers both, because count(DISTINCT ...) skips NULLs: a NULL key
-    # falls short of count(*) exactly as a duplicate does.
-    total, distinct = con.execute(
-        f"SELECT count(*), count(DISTINCT {key_column}) FROM github.{table}"
-    ).fetchone()
-    return total == distinct
 
 
 def create_search_indexes(db_path: Path) -> list[str]:
@@ -83,32 +72,10 @@ def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) ->
             )
             _drop_index(con, table)
             return None
-        available = present_columns(con, table)
-        if key_column not in available:
-            print(
-                f"Note: skipping full-text index for {table}; "
-                f"key column {key_column} is not present.",
-                file=sys.stderr,
-            )
-            _drop_index(con, table)
-            return None
-        # dlt does not materialize a column that never received data, so index what is
-        # actually there. The column set is reported by `schema` rather than assumed.
-        indexed = [column for column in columns if column in available]
-        if not indexed:
-            print(
-                f"Note: skipping full-text index for {table}; no text columns are present.",
-                file=sys.stderr,
-            )
-            _drop_index(con, table)
-            return None
-        if not _key_is_usable(con, table, key_column):
-            _drop_index(con, table)
-            return (
-                f"skipped the full-text index for {table}: {key_column} is not unique and "
-                f"non-null, which would score rows wrongly"
-            )
-        quoted = ", ".join(f"'{column}'" for column in indexed)
+        # Every declared column, or nothing: a column dlt has not created yet makes the
+        # PRAGMA raise into the drop-and-warn below. Indexing the subset that happens to
+        # exist would answer plausibly and wrongly by omission instead.
+        quoted = ", ".join(f"'{column}'" for column in columns)
         con.execute(
             f"PRAGMA create_fts_index('github.{table}', '{key_column}', {quoted}, overwrite=1)"
         )

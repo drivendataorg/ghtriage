@@ -13,7 +13,7 @@ uses for the OpenAPI descriptions.
 Materialize before indexing: `full_text_search` indexes what this module builds.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import sys
 
@@ -21,19 +21,7 @@ import duckdb
 
 ISSUE_ACTIVITY_SQL = r"""
 WITH issues_padded AS (
-    -- Supplies columns dlt has not created yet. UNION ALL BY NAME keeps a column
-    -- the table already has and adds the rest as typed NULLs. The declared types
-    -- must match what dlt produces: a mismatch coerces silently rather than
-    -- erroring, and this union runs on every pull, not only when a column is absent.
-    -- Pinned by test_padding_does_not_coerce_existing_column_values (values) and
-    -- test_view_types_match_spec_on_sparse_databases (types).
-    SELECT * FROM github.issues
-    UNION ALL BY NAME
-    SELECT
-        NULL::BIGINT AS id,
-        NULL::VARCHAR AS state_reason,
-        NULL::TIMESTAMP WITH TIME ZONE AS closed_at
-    WHERE false
+    SELECT * FROM {issues}
 ),
 comments_keyed AS (
     SELECT
@@ -126,15 +114,7 @@ LEFT JOIN assignee_agg asg ON asg._dlt_parent_id = i._dlt_id
 
 PULL_REQUEST_ACTIVITY_SQL = r"""
 WITH pulls_padded AS (
-    -- See the note on issues_padded: declared types must match what dlt produces.
-    SELECT * FROM github.pull_requests
-    UNION ALL BY NAME
-    SELECT
-        NULL::BIGINT AS id,
-        NULL::BOOLEAN AS draft,
-        NULL::TIMESTAMP WITH TIME ZONE AS closed_at,
-        NULL::TIMESTAMP WITH TIME ZONE AS merged_at
-    WHERE false
+    SELECT * FROM {pull_requests}
 ),
 conversation_keyed AS (
     -- PR conversation comments live in conversation_comments, keyed by the PR number.
@@ -247,10 +227,7 @@ LEFT JOIN reviewer_agg rv ON rv._dlt_parent_id = p._dlt_id
 
 ISSUE_THREADS_SQL = r"""
 WITH issues_padded AS (
-    -- See issues_padded above: the declared types must match what dlt produces.
-    SELECT * FROM github.issues
-    UNION ALL BY NAME
-    SELECT NULL::VARCHAR AS title, NULL::VARCHAR AS body WHERE false
+    SELECT * FROM {issues}
 ),
 comments AS (
     SELECT
@@ -266,9 +243,7 @@ LEFT JOIN comments c ON c.number = i.number
 
 PULL_REQUEST_THREADS_SQL = r"""
 WITH pulls_padded AS (
-    SELECT * FROM github.pull_requests
-    UNION ALL BY NAME
-    SELECT NULL::VARCHAR AS title, NULL::VARCHAR AS body WHERE false
+    SELECT * FROM {pull_requests}
 ),
 comments AS (
     -- Both channels, interleaved by time. The split that pull_request_activity keeps for
@@ -295,57 +270,76 @@ LEFT JOIN comments c ON c.number = p.number
 """
 
 
-# Stand-ins for source tables dlt has not created yet. Each must match the shape
-# the CTE around it selects, so the substitution is invisible downstream.
-EMPTY: dict[str, str] = {
-    "conversation_comments": (
-        "(SELECT NULL::VARCHAR AS issue_url, NULL::VARCHAR AS user__login, "
-        "NULL::VARCHAR AS user__type, NULL::VARCHAR AS body, "
-        "NULL::TIMESTAMP WITH TIME ZONE AS created_at WHERE false)"
-    ),
-    "issues__labels": (
-        "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS name WHERE false)"
-    ),
-    "issues__assignees": (
-        "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS login WHERE false)"
-    ),
-    "review_comments": (
-        "(SELECT NULL::VARCHAR AS pull_request_url, NULL::VARCHAR AS user__login, "
-        "NULL::VARCHAR AS user__type, NULL::VARCHAR AS body, "
-        "NULL::TIMESTAMP WITH TIME ZONE AS created_at WHERE false)"
-    ),
-    "pull_requests__labels": (
-        "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS name WHERE false)"
-    ),
-    "pull_requests__assignees": (
-        "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS login WHERE false)"
-    ),
-    "pull_requests__requested_reviewers": (
-        "(SELECT NULL::VARCHAR AS _dlt_parent_id, NULL::VARCHAR AS login WHERE false)"
-    ),
-}
-
-
 @dataclass(frozen=True)
 class Derived:
-    """One derived object, and what has to exist before it can be built."""
+    """One derived object, and every source table its SQL reads."""
 
     kind: str  # VIEW or TABLE -- a table only because DuckDB cannot index a view
-    base: str  # base table that must exist for the object to mean anything
-    sql: str
-    requires: tuple[str, ...] = ()  # columns the base table must carry
-    # slot -> columns the real table must carry to be used instead of the stand-in.
-    # A comment table present but text-less is not the same as an absent one.
-    sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    base: str  # slot that must exist for the object to mean anything
+    sql: str  # template with a {slot} per source table, base table included
+    sources: dict[str, dict[str, str]]  # slot -> {column: DuckDB type} the SQL reads
 
 
-# What each slot must carry for the real table to be used instead of the stand-in:
-# exactly the columns the SQL reads from it.
-_COMMENT_FACTS = ("user__login", "user__type", "created_at")
-_CONVERSATION = ("issue_url", *_COMMENT_FACTS)
-_REVIEW = ("pull_request_url", *_COMMENT_FACTS)
-_LABELS = ("_dlt_parent_id", "name")
-_LOGINS = ("_dlt_parent_id", "login")
+# Every column each slot's SQL reads, with the type dlt gives it. Complete by rule, not
+# by observation: "which columns might dlt omit?" is a judgment renewed at every review,
+# while listing all of them is mechanical and padding an always-present column is free.
+#
+# The types must match what dlt produces. UNION ALL BY NAME coerces rather than errors,
+# and the padding runs on every pull, not only when a column is absent -- so a wrong type
+# silently rewrites real values. Pinned by
+# test_padding_does_not_coerce_existing_column_values (values) and
+# test_view_types_match_spec_on_sparse_databases (types).
+_TS = "TIMESTAMP WITH TIME ZONE"
+
+# Read by the activity views: the base row, its identity, state and timestamps, plus
+# _dlt_id for the label/assignee/reviewer joins.
+_ISSUE_FACTS = {
+    "id": "BIGINT",
+    "number": "BIGINT",
+    "title": "VARCHAR",
+    "state": "VARCHAR",
+    "state_reason": "VARCHAR",
+    "user__login": "VARCHAR",
+    "user__type": "VARCHAR",
+    "created_at": _TS,
+    "updated_at": _TS,
+    "closed_at": _TS,
+    "_dlt_id": "VARCHAR",
+}
+_PULL_FACTS = {
+    "id": "BIGINT",
+    "number": "BIGINT",
+    "title": "VARCHAR",
+    "state": "VARCHAR",
+    "draft": "BOOLEAN",
+    "user__login": "VARCHAR",
+    "user__type": "VARCHAR",
+    "created_at": _TS,
+    "updated_at": _TS,
+    "closed_at": _TS,
+    "merged_at": _TS,
+    "_dlt_id": "VARCHAR",
+}
+# Read by the thread tables: the document key, the join key, and the text.
+_THREAD_SOURCE = {"id": "BIGINT", "number": "BIGINT", "title": "VARCHAR", "body": "VARCHAR"}
+# Who commented and when, keyed back to the item by its API URL.
+_CONVERSATION_FACTS = {
+    "issue_url": "VARCHAR",
+    "user__login": "VARCHAR",
+    "user__type": "VARCHAR",
+    "created_at": _TS,
+}
+_REVIEW_FACTS = {
+    "pull_request_url": "VARCHAR",
+    "user__login": "VARCHAR",
+    "user__type": "VARCHAR",
+    "created_at": _TS,
+}
+_CONVERSATION_TEXT = {"issue_url": "VARCHAR", "body": "VARCHAR", "created_at": _TS}
+_REVIEW_TEXT = {"pull_request_url": "VARCHAR", "body": "VARCHAR", "created_at": _TS}
+# The child tables, joined on the parent's _dlt_id.
+_LABELS = {"_dlt_parent_id": "VARCHAR", "name": "VARCHAR"}
+_LOGINS = {"_dlt_parent_id": "VARCHAR", "login": "VARCHAR"}
 
 DERIVED: dict[str, Derived] = {
     "issue_activity": Derived(
@@ -353,7 +347,8 @@ DERIVED: dict[str, Derived] = {
         "issues",
         ISSUE_ACTIVITY_SQL,
         sources={
-            "conversation_comments": _CONVERSATION,
+            "issues": _ISSUE_FACTS,
+            "conversation_comments": _CONVERSATION_FACTS,
             "issues__labels": _LABELS,
             "issues__assignees": _LOGINS,
         },
@@ -363,8 +358,9 @@ DERIVED: dict[str, Derived] = {
         "pull_requests",
         PULL_REQUEST_ACTIVITY_SQL,
         sources={
-            "conversation_comments": _CONVERSATION,
-            "review_comments": _REVIEW,
+            "pull_requests": _PULL_FACTS,
+            "conversation_comments": _CONVERSATION_FACTS,
+            "review_comments": _REVIEW_FACTS,
             "pull_requests__labels": _LABELS,
             "pull_requests__assignees": _LOGINS,
             "pull_requests__requested_reviewers": _LOGINS,
@@ -374,17 +370,16 @@ DERIVED: dict[str, Derived] = {
         "TABLE",
         "issues",
         ISSUE_THREADS_SQL,
-        requires=("id",),
-        sources={"conversation_comments": ("issue_url", "body", "created_at")},
+        sources={"issues": _THREAD_SOURCE, "conversation_comments": _CONVERSATION_TEXT},
     ),
     "pull_request_threads": Derived(
         "TABLE",
         "pull_requests",
         PULL_REQUEST_THREADS_SQL,
-        requires=("id",),
         sources={
-            "conversation_comments": ("issue_url", "body", "created_at"),
-            "review_comments": ("pull_request_url", "body", "created_at"),
+            "pull_requests": _THREAD_SOURCE,
+            "conversation_comments": _CONVERSATION_TEXT,
+            "review_comments": _REVIEW_TEXT,
         },
     ),
 }
@@ -611,22 +606,19 @@ def present_tables(con: duckdb.DuckDBPyConnection) -> set[str]:
     }
 
 
-def present_columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
-    return {
-        row[0]
-        for row in con.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema = 'github' AND table_name = ?",
-            [table],
-        ).fetchall()
-    }
+def render_source(table: str, columns: dict[str, str], present: set[str]) -> str:
+    """A relation carrying every declared column, whatever dlt has created so far.
 
-
-def render_slots(sql: str, usable: set[str]) -> str:
-    """Fill each optional-source slot with the real table or an empty stand-in."""
-    return sql.format(
-        **{slot: (f"github.{slot}" if slot in usable else empty) for slot, empty in EMPTY.items()}
-    )
+    dlt makes a table or a column only once data arrives for it, so both can be absent
+    on a young or sparse repository. An absent table becomes an empty relation with
+    exactly the declared columns; a present one is padded by `UNION ALL BY NAME`, which
+    keeps every column it already has and adds the rest as typed NULLs. Either way the
+    SQL downstream sees every column it reads, so nothing has to probe for one.
+    """
+    typed_nulls = ", ".join(f"NULL::{ctype} AS {name}" for name, ctype in columns.items())
+    if table not in present:
+        return f"(SELECT {typed_nulls} WHERE false)"
+    return f"(SELECT * FROM github.{table} UNION ALL BY NAME SELECT {typed_nulls} WHERE false)"
 
 
 def create_derived(db_path: Path) -> list[str]:
@@ -645,13 +637,6 @@ def create_derived(db_path: Path) -> list[str]:
     return failures
 
 
-def drop_derived_objects(db_path: Path) -> None:
-    """Drop every derived view and table."""
-    with duckdb.connect(str(db_path)) as con:
-        for name in DERIVED:
-            _drop_one(con, name)
-
-
 def _drop_one(con: duckdb.DuckDBPyConnection, name: str) -> None:
     """Drop `name`, whichever kind it is."""
     con.execute(f"DROP {DERIVED[name].kind} IF EXISTS github.{name}")
@@ -660,9 +645,9 @@ def _drop_one(con: duckdb.DuckDBPyConnection, name: str) -> None:
 def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) -> str | None:
     spec = DERIVED[name]
     kind = spec.kind.lower()
-    # Everything is inside the guard, catalog probes included: an object that cannot be
-    # built must cost only itself. What escapes here escapes `create_derived` too, and
-    # the caller can then only assume every derived table is of unknown age.
+    # Everything is inside the guard: an object that cannot be built must cost only
+    # itself. What escapes here escapes `create_derived` too, and the caller can then
+    # only assume every derived object is of unknown age.
     try:
         if spec.base not in present:
             print(
@@ -671,22 +656,13 @@ def _create_one(con: duckdb.DuckDBPyConnection, name: str, present: set[str]) ->
             )
             _drop_one(con, name)
             return None
-        if missing := sorted(set(spec.requires) - present_columns(con, spec.base)):
-            print(
-                f"Note: skipping {kind} {name}; "
-                f"{spec.base} has no {', '.join(missing)} column yet.",
-                file=sys.stderr,
-            )
-            _drop_one(con, name)
-            return None
-        usable = {
-            slot
-            for slot in EMPTY
-            if slot in present and set(spec.sources.get(slot, ())) <= present_columns(con, slot)
-        }
-        con.execute(
-            f"CREATE OR REPLACE {spec.kind} github.{name} AS {render_slots(spec.sql, usable)}"
+        sql = spec.sql.format(
+            **{
+                slot: render_source(slot, columns, present)
+                for slot, columns in spec.sources.items()
+            }
         )
+        con.execute(f"CREATE OR REPLACE {spec.kind} github.{name} AS {sql}")
 
         # CREATE OR REPLACE drops comments, so they are reapplied every time.
         con.execute(f"COMMENT ON {spec.kind} github.{name} IS {quote_literal(DERIVED_DOCS[name])}")

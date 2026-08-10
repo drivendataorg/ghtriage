@@ -9,7 +9,7 @@ import duckdb
 
 from ghtriage.annotations import fetch_and_annotate
 from ghtriage.config import get_db_path, get_pipelines_dir
-from ghtriage.derived import create_derived, drop_derived_objects
+from ghtriage.derived import create_derived
 from ghtriage.full_text_search import create_search_indexes
 
 
@@ -180,14 +180,10 @@ def run_pull(
     try:
         warnings.extend(create_derived(db_path))
     except Exception as exc:
+        # Per-object failures already drop what they could not rebuild. A wholesale
+        # failure -- the database cannot be opened or probed -- leaves the user one
+        # `ghtriage pull --full` from clean, which the CLI says next to this warning.
         warnings.append(f"derived objects failed: {exc}")
-        # Whatever survived from an earlier pull is now of unknown age. Removing it makes
-        # the next search fail loudly rather than quietly answer from stale text, and
-        # leaves the index step nothing to index.
-        try:
-            drop_derived_objects(db_path)
-        except Exception as exc:
-            warnings.append(f"dropping stale derived objects failed: {exc}")
 
     try:
         warnings.extend(create_search_indexes(db_path))

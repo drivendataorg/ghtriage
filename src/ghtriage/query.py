@@ -1,11 +1,10 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-import sys
 
 import duckdb
 
 from ghtriage.config import get_db_path
-from ghtriage.full_text_search import INDEXES
+from ghtriage.full_text_search import INDEXES, index_schema
 
 _MAIN_TABLES = ("issues", "pull_requests", "conversation_comments", "review_comments")
 
@@ -105,56 +104,39 @@ def get_table_descriptions(cwd: str | Path | None = None) -> dict[str, str]:
 @dataclass
 class FullTextIndex:
     table: str
-    key_column: str | None
+    key_column: str
     columns: list[str]
     document_count: int
 
 
 def get_full_text_indexes(cwd: str | Path | None = None) -> list[FullTextIndex]:
-    """Return the full-text indexes present in the database, ordered by table name.
+    """Return the declared full-text indexes that exist, in declaration order.
 
-    Existence, indexed columns and document counts are read from each index's own
-    catalog tables, so they cannot drift from what was actually built. The key column
-    is not recoverable that way -- `docs` stores key values under an opaque `name` --
-    so it comes from the declaration, and is None for an index ghtriage did not declare.
+    The declaration is authoritative: an index that cannot cover exactly its declared
+    key and columns is dropped rather than built, so there is nothing to introspect.
+    The document count comes from the indexed table, which equals the index's own count
+    because the two are rebuilt in the same pull and nothing writes between pulls. An
+    `fts_github_%` schema ghtriage did not declare is not ours to describe, so it is
+    left out rather than half-reported.
     """
     db_path = _resolve_db_path(cwd=cwd)
     with duckdb.connect(str(db_path), read_only=True) as conn:
-        schemas = [
+        present = {
             row[0]
             for row in conn.execute(
-                "SELECT schema_name FROM duckdb_schemas() "
-                "WHERE schema_name LIKE 'fts_github_%' ORDER BY schema_name"
+                "SELECT schema_name FROM duckdb_schemas() WHERE schema_name LIKE 'fts_github_%'"
             ).fetchall()
-        ]
-
-        indexes = []
-        for schema in schemas:
-            table = schema.removeprefix("fts_github_")
-            try:
-                columns = [
-                    row[0]
-                    for row in conn.execute(
-                        f'SELECT field FROM "{schema}".fields ORDER BY fieldid'
-                    ).fetchall()
-                ]
-                count = conn.execute(f'SELECT count(*) FROM "{schema}".docs').fetchone()[0]
-            except Exception as exc:
-                # An index whose catalog tables cannot be read is not reportable, but it
-                # must not take the rest of `ghtriage schema` down with it. Said out loud,
-                # because otherwise it is indistinguishable from one never built.
-                print(f"Warning: could not read index {schema}: {exc}", file=sys.stderr)
-                continue
-            declared = INDEXES.get(table)
-            indexes.append(
-                FullTextIndex(
-                    table=table,
-                    key_column=declared[0] if declared else None,
-                    columns=columns,
-                    document_count=count,
-                )
+        }
+        return [
+            FullTextIndex(
+                table=table,
+                key_column=key_column,
+                columns=list(columns),
+                document_count=conn.execute(f"SELECT count(*) FROM github.{table}").fetchone()[0],
             )
-    return indexes
+            for table, (key_column, columns) in INDEXES.items()
+            if index_schema(table) in present
+        ]
 
 
 @dataclass

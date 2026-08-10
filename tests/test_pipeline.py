@@ -4,7 +4,8 @@ from unittest.mock import Mock
 import duckdb
 import pytest
 
-from ghtriage.pipeline import _write_meta, run_pull
+from ghtriage.full_text_search import INDEXES
+from ghtriage.pipeline import _write_meta, build_rest_api_source, run_pull
 
 
 def _install_pipeline_mocks(monkeypatch):
@@ -322,34 +323,6 @@ def test_run_pull_survives_and_reports_a_failed_step(
     assert "boom" in warnings[0]
 
 
-def test_run_pull_drops_derived_objects_when_the_derive_step_fails(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """Left in place, they would be indexed as though they were current."""
-    _install_pipeline_mocks(monkeypatch)
-    monkeypatch.setattr("ghtriage.pipeline.create_derived", Mock(side_effect=RuntimeError("boom")))
-    mock_drop = Mock()
-    monkeypatch.setattr("ghtriage.pipeline.drop_derived_objects", mock_drop)
-    monkeypatch.chdir(tmp_path)
-
-    run_pull(repo="owner/repo", token="t", full=False)
-
-    mock_drop.assert_called_once_with(tmp_path / ".ghtriage" / "ghtriage.duckdb")
-
-
-def test_run_pull_does_not_drop_derived_objects_when_the_derive_step_succeeds(
-    tmp_path: Path, monkeypatch
-) -> None:
-    _install_pipeline_mocks(monkeypatch)
-    mock_drop = Mock()
-    monkeypatch.setattr("ghtriage.pipeline.drop_derived_objects", mock_drop)
-    monkeypatch.chdir(tmp_path)
-
-    run_pull(repo="owner/repo", token="t", full=False)
-
-    mock_drop.assert_not_called()
-
-
 @pytest.mark.parametrize(
     ("target", "expected"),
     [
@@ -372,3 +345,33 @@ def test_run_pull_reports_a_single_object_that_failed_to_build(
     _load_info, warnings = run_pull(repo="owner/repo", token="t", full=False)
 
     assert expected in warnings
+
+
+# ---------------------------------------------------------------------------
+# The loader guarantee the full-text indexes rest on
+# ---------------------------------------------------------------------------
+
+
+def test_every_indexed_resource_merges_on_id(monkeypatch) -> None:
+    """`id` is the full-text document key, and dlt's merge is what makes it unique.
+
+    Nothing re-verifies that at index time: this is the layer that provides the
+    guarantee, so this is the layer that gets the test.
+    """
+    captured: dict = {}
+    monkeypatch.setattr(
+        "ghtriage.pipeline.rest_api_source", lambda config: captured.update(config)
+    )
+
+    build_rest_api_source(repo="owner/repo", token="t")
+
+    defaults = captured["resource_defaults"]
+    for resource in captured["resources"]:
+        assert resource.get("primary_key", defaults["primary_key"]) == "id", resource["name"]
+        assert resource.get("write_disposition", defaults["write_disposition"]) == "merge", (
+            resource["name"]
+        )
+
+    # Every raw table an index keys on `id` is one of these resources.
+    declared = {name for name in INDEXES if not name.endswith("_threads")}
+    assert declared == {resource["name"] for resource in captured["resources"]}

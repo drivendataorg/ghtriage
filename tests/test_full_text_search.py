@@ -4,7 +4,6 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from ghtriage import full_text_search
 from ghtriage.derived import create_derived
 from ghtriage.full_text_search import INDEXES, create_search_indexes, index_schema
 
@@ -284,39 +283,10 @@ def test_skips_table_when_base_table_missing(db: Path, capsys: pytest.CaptureFix
     assert "review_comments" in capsys.readouterr().err
 
 
-def test_indexes_present_subset_when_a_column_is_missing(db: Path) -> None:
-    """dlt does not materialize a column that never received data."""
+def test_does_not_index_a_reduced_column_set(db: Path) -> None:
+    """A search over `issues` that quietly covered only `title` would answer plausibly
+    and wrongly by omission. All the declared columns, or no index."""
     _drop(db, "ALTER TABLE github.issues DROP COLUMN body")
-
-    create_search_indexes(db)
-
-    with duckdb.connect(str(db), read_only=True) as con:
-        indexed = [
-            row[0]
-            for row in con.execute(f"SELECT field FROM {index_schema('issues')}.fields").fetchall()
-        ]
-    assert indexed == ["title"]
-
-
-def test_skips_table_when_no_text_column_is_present(db: Path) -> None:
-    _drop(db, "ALTER TABLE github.conversation_comments DROP COLUMN body")
-
-    create_search_indexes(db)
-
-    assert index_schema("conversation_comments") not in _schemas(db)
-
-
-def test_skips_table_when_key_column_is_missing(db: Path) -> None:
-    _drop(db, "ALTER TABLE github.issues DROP COLUMN id")
-
-    create_search_indexes(db)
-
-    assert index_schema("issues") not in _schemas(db)
-
-
-def test_skips_table_when_key_is_not_unique(db: Path, capsys: pytest.CaptureFixture) -> None:
-    """A duplicate key makes every sharing row report the first one's score, silently."""
-    _drop(db, "INSERT INTO github.issues VALUES (1001, 5, 'duplicate id', 'body', 'i5')")
 
     failures = create_search_indexes(db)
 
@@ -324,60 +294,29 @@ def test_skips_table_when_key_is_not_unique(db: Path, capsys: pytest.CaptureFixt
     assert [f for f in failures if "issues" in f]
 
 
-def test_skips_table_when_key_is_null(db: Path) -> None:
-    """A NULL key scores NULL forever, so the row is silently unsearchable."""
-    _drop(db, "INSERT INTO github.issues VALUES (NULL, 5, 'no id', 'body', 'i5')")
-
-    create_search_indexes(db)
-
-    assert index_schema("issues") not in _schemas(db)
-
-
-def test_swallows_errors_from_one_table(
-    db: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-) -> None:
-    """One table raising must not abort the tables after it.
-
-    The failure has to come from the PRAGMA itself: a declared column that is merely
-    absent is filtered out earlier, which is a different path.
-    """
-    real_check = full_text_search._key_is_usable
-
-    def explode_for_issues(con, table, key_column):
-        if table == "issues":
-            raise RuntimeError("index build exploded")
-        return real_check(con, table, key_column)
-
-    monkeypatch.setattr(full_text_search, "_key_is_usable", explode_for_issues)
+def test_swallows_errors_from_one_table(db: Path) -> None:
+    """One table failing must not abort the tables after it."""
+    _drop(db, "ALTER TABLE github.conversation_comments DROP COLUMN body")
 
     failures = create_search_indexes(db)
 
-    assert index_schema("pull_requests") in _schemas(db)
-    assert index_schema("issues") not in _schemas(db)
-    assert [f for f in failures if "index build exploded" in f]
+    assert index_schema("issues") in _schemas(db)
+    assert index_schema("review_comments") in _schemas(db)
+    assert index_schema("conversation_comments") not in _schemas(db)
+    assert [f for f in failures if "conversation_comments" in f]
 
 
-def test_skipping_a_rebuild_drops_the_previous_index(db: Path) -> None:
-    """A skipped build must leave no index, not yesterday's.
+def test_a_failed_rebuild_drops_the_previous_index(db: Path) -> None:
+    """The failure path needs the same drop the skip path has.
 
-    `overwrite=1` only refreshes when the PRAGMA runs, so without an explicit drop a
-    degraded pull would keep scoring against the previous pull's rows -- silently, and
-    with a document count that looks plausible in `ghtriage schema`.
+    `overwrite=1` only refreshes when the PRAGMA runs, so without an explicit drop an
+    index that failed to rebuild would keep scoring the previous pull's text -- silently,
+    and behind a document count that looks entirely plausible in `ghtriage schema`.
     """
     create_search_indexes(db)
     assert index_schema("issues") in _schemas(db)
 
     _drop(db, "ALTER TABLE github.issues DROP COLUMN title")
-    _drop(db, "ALTER TABLE github.issues DROP COLUMN body")
-    create_search_indexes(db)
-
-    assert index_schema("issues") not in _schemas(db)
-
-
-def test_skipping_a_rebuild_for_an_unusable_key_drops_the_previous_index(db: Path) -> None:
-    create_search_indexes(db)
-
-    _drop(db, "INSERT INTO github.issues VALUES (1001, 5, 'duplicate id', 'body', 'i5')")
     create_search_indexes(db)
 
     assert index_schema("issues") not in _schemas(db)
@@ -422,36 +361,3 @@ def test_skipping_a_vanished_table_drops_the_previous_index(db: Path) -> None:
     create_search_indexes(db)
 
     assert index_schema("review_comments") not in _schemas(db)
-
-
-def test_skipping_a_vanished_key_column_drops_the_previous_index(db: Path) -> None:
-    create_search_indexes(db)
-
-    _drop(db, "ALTER TABLE github.issues DROP COLUMN id")
-    create_search_indexes(db)
-
-    assert index_schema("issues") not in _schemas(db)
-
-
-def test_a_failed_rebuild_drops_the_previous_index(
-    db: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The error path needs the same drop the skip paths have.
-
-    Without it an index that raised mid-rebuild keeps scoring the previous pull's text,
-    behind a document count that looks entirely plausible in `ghtriage schema`.
-    """
-    create_search_indexes(db)
-    assert index_schema("issues") in _schemas(db)
-
-    real_check = full_text_search._key_is_usable
-
-    def explode_for_issues(con, table, key_column):
-        if table == "issues":
-            raise RuntimeError("transient")
-        return real_check(con, table, key_column)
-
-    monkeypatch.setattr(full_text_search, "_key_is_usable", explode_for_issues)
-    create_search_indexes(db)
-
-    assert index_schema("issues") not in _schemas(db)

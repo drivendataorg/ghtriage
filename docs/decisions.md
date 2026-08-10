@@ -213,8 +213,8 @@ young repository legitimately skips several.
 ## 2026-08-08 — Defensive-layer simplification
 
 Scope reduction of the #13 defensive machinery before it shipped — see
-[the plan](/docs/plans/2026-08-08-simplify-derived-and-fts.md) for the failure taxonomy and boundary
-rule these decisions apply, and for the review protocol that goes with them.
+[the plan](/docs/plans/archive/2026-08-08-simplify-derived-and-fts.md) for the failure taxonomy
+and boundary rule these decisions apply, and for the review protocol that goes with them.
 
 **Absent upstream data is handled by one declaration-driven padding combinator, applied to every
 source a derived object reads — base tables included.**

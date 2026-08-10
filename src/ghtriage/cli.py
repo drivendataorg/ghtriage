@@ -6,7 +6,6 @@ import sys
 from typing import Sequence
 
 from ghtriage.config import get_db_path, resolve_repo, resolve_token
-from ghtriage.full_text_search import INDEXES
 from ghtriage.pipeline import run_pull
 from ghtriage.query import (
     FullTextIndex,
@@ -65,6 +64,14 @@ def _run_pull(args: argparse.Namespace) -> int:
     print(load_info)
     for warning in warnings:
         print(f"Warning: {warning}", file=sys.stderr)
+    if warnings:
+        # Every post-load step is recomputed from scratch by a full pull, so one command
+        # covers all of them. Said here rather than in each warning, and without assuming
+        # the reader knows this repository.
+        print(
+            "A full refresh rebuilds everything the failed steps produce: ghtriage pull --full",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -125,13 +132,7 @@ def _run_query(args: argparse.Namespace) -> int:
 
 
 def _print_index_block(indexes: list[FullTextIndex]) -> None:
-    """The searchable surface, read from the indexes themselves.
-
-    An agent that cannot discover an index may as well not have one, and the
-    fail-closed note is here because nothing else can report it: an id scored against
-    another table's index almost always returns nothing, which reads the same as a
-    repository that genuinely has no match.
-    """
+    """The searchable surface. An index agents cannot discover may as well not exist."""
     if not indexes:
         return
 
@@ -143,31 +144,29 @@ def _print_index_block(indexes: list[FullTextIndex]) -> None:
         [
             (
                 index.table,
-                index.key_column or "",
+                index.key_column,
                 ", ".join(index.columns),
                 f"{index.document_count:,}",
             )
             for index in indexes
         ],
     )
-    # Listed alphabetically, but demonstrated with whichever index comes first in the
-    # declaration -- `issues` reads as an example in a way that a comment table does not.
-    order = list(INDEXES)
-    example = min(
-        indexes,
-        key=lambda index: order.index(index.table) if index.table in order else len(order),
-    )
-    key = example.key_column or "id"
+    # Declaration order, so the example is `issues` -- which reads as an example in a
+    # way that a comment table does not.
+    example = indexes[0]
     print()
     print("Search a table by scoring its key column against its own index:")
-    print(f"  SELECT *, fts_github_{example.table}.match_bm25({key}, 'search terms') AS score")
+    print(
+        f"  SELECT *, fts_github_{example.table}."
+        f"match_bm25({example.key_column}, 'search terms') AS score"
+    )
     print(f"  FROM {example.table} WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10")
     print()
-    print("The macro is keyed on the document id, not bound to its table, so it also works")
-    print("from any view carrying that id. An id the index does not hold scores NULL, so")
-    print("pairing a table with another table's index almost always returns no rows rather")
-    print("than an error -- almost, because GitHub ids are unique per object type, not")
-    print("globally, so a colliding id would score against the wrong document.")
+    print(
+        "The macro is keyed on the document id and is not bound to the indexed table, "
+        "so it also works"
+    )
+    print("from any relation carrying that id. An id the index does not hold scores NULL.")
 
 
 def _run_schema(args: argparse.Namespace) -> int:
@@ -178,7 +177,7 @@ def _run_schema(args: argparse.Namespace) -> int:
                 index = indexes[0]
                 print(
                     f"Full-text search: fts_github_{index.table}."
-                    f"match_bm25({index.key_column or 'id'}, 'query') "
+                    f"match_bm25({index.key_column}, 'query') "
                     f"over {', '.join(index.columns)} ({index.document_count:,} documents)"
                 )
                 print()

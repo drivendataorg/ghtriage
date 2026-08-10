@@ -219,10 +219,17 @@ def test_get_table_columns_works_on_views(cwd_with_view: Path) -> None:
 
 @pytest.fixture
 def cwd_with_index(sample_cwd: Path) -> Path:
-    """sample_cwd plus a full-text index, as create_search_indexes() would leave it."""
+    """sample_cwd plus a full-text index, as create_search_indexes() would leave it.
+
+    Over the declared columns, because that is the only kind of index that exists: a
+    build that cannot cover them all is dropped instead.
+    """
     db_path = sample_cwd / ".ghtriage" / "ghtriage.duckdb"
     with duckdb.connect(str(db_path)) as conn:
-        conn.execute("PRAGMA create_fts_index('github.issues', 'id', 'title', overwrite=1)")
+        conn.execute("ALTER TABLE github.issues ADD COLUMN body VARCHAR")
+        conn.execute(
+            "PRAGMA create_fts_index('github.issues', 'id', 'title', 'body', overwrite=1)"
+        )
     return sample_cwd
 
 
@@ -235,29 +242,17 @@ def test_get_full_text_indexes_reports_columns_and_document_count(cwd_with_index
 
     assert len(indexes) == 1
     assert indexes[0] == FullTextIndex(
-        table="issues", key_column="id", columns=["title"], document_count=2
+        table="issues", key_column="id", columns=["title", "body"], document_count=2
     )
 
 
-def test_get_full_text_indexes_reads_columns_from_the_catalog(cwd_with_index: Path) -> None:
-    """Reported columns come from the index itself, not from the declaration."""
-    db_path = cwd_with_index / ".ghtriage" / "ghtriage.duckdb"
-    with duckdb.connect(str(db_path)) as conn:
-        conn.execute("ALTER TABLE github.issues ADD COLUMN body VARCHAR")
-        conn.execute(
-            "PRAGMA create_fts_index('github.issues', 'id', 'title', 'body', overwrite=1)"
-        )
-
-    assert get_full_text_indexes(cwd=cwd_with_index)[0].columns == ["title", "body"]
-
-
-def test_get_full_text_indexes_skips_an_unreadable_index(
-    cwd_with_index: Path, capsys: pytest.CaptureFixture
+def test_get_full_text_indexes_ignores_a_schema_ghtriage_did_not_declare(
+    cwd_with_index: Path,
 ) -> None:
-    """One malformed index must not take down the whole schema listing -- but must be said."""
+    """Reporting walks the declaration, so a stray fts_github_% schema is not ours to
+    describe -- half-reporting it would invent a key column and a column set."""
     db_path = cwd_with_index / ".ghtriage" / "ghtriage.duckdb"
     with duckdb.connect(str(db_path)) as conn:
         conn.execute("CREATE SCHEMA fts_github_ghost")
 
     assert [index.table for index in get_full_text_indexes(cwd=cwd_with_index)] == ["issues"]
-    assert "could not read index fts_github_ghost" in capsys.readouterr().err
