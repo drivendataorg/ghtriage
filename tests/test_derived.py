@@ -731,6 +731,48 @@ def test_create_derived_substitutes_empty_relation_for_missing_source_table(
     ) == [(0, 0, None, None, [], [], 1)]
 
 
+def test_create_derived_pads_a_present_source_missing_a_declared_column(
+    tmp_path: Path,
+) -> None:
+    """A source table missing a declared column is padded, not swapped for the stand-in:
+    rows that exist are counted, with NULLs standing in for the absent column."""
+    path = tmp_path / "partial.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE SCHEMA github")
+    con.execute(
+        "CREATE TABLE github.issues (id BIGINT, number BIGINT, title VARCHAR, body VARCHAR, "
+        "state VARCHAR, user__login VARCHAR, user__type VARCHAR, "
+        "created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE, "
+        "_dlt_id VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO github.issues VALUES (1,1,'t','b','open','alice','User',now(),now(),'i1')"
+    )
+    # No user__login column yet, but the comment rows are real.
+    con.execute(
+        "CREATE TABLE github.conversation_comments (id BIGINT, issue_url VARCHAR, "
+        "user__type VARCHAR, body VARCHAR, created_at TIMESTAMP WITH TIME ZONE)"
+    )
+    con.executemany(
+        "INSERT INTO github.conversation_comments VALUES (?,?,?,?,?)",
+        [
+            (9, _api("issues", 1), "User", "hi", _d(2)),
+            (10, _api("issues", 1), "Bot", "beep", _d(3)),
+        ],
+    )
+    con.close()
+
+    create_derived(path)
+
+    # Two comments counted, the User one non-bot; the NULL logins add no participants
+    # beyond the author.
+    assert rows(
+        path,
+        "SELECT comment_count, non_bot_comment_count, participant_count "
+        "FROM github.issue_activity",
+    ) == [(2, 1, 1)]
+
+
 def test_every_source_slot_is_declared_and_every_declaration_is_used() -> None:
     """The drift guard on the combinator, both ways.
 
