@@ -8,7 +8,9 @@ from typing import Sequence
 from ghtriage.config import get_db_path, resolve_repo, resolve_token
 from ghtriage.pipeline import run_pull
 from ghtriage.query import (
+    FullTextIndex,
     execute_query,
+    get_full_text_indexes,
     get_status_data,
     get_table_columns,
     get_table_descriptions,
@@ -57,11 +59,19 @@ def _run_pull(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    load_info, meta_error = run_pull(repo=repo, token=token, full=args.full)
+    load_info, warnings = run_pull(repo=repo, token=token, full=args.full)
     print(f"Pull completed for {repo}")
     print(load_info)
-    if meta_error is not None:
-        print(f"Warning: metadata write failed: {meta_error}", file=sys.stderr)
+    for warning in warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
+    if warnings:
+        # Every post-load step is recomputed from scratch by a full pull, so one command
+        # covers all of them. Said here rather than in each warning, and without assuming
+        # the reader knows this repository.
+        print(
+            "A full refresh rebuilds everything the failed steps produce: ghtriage pull --full",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -121,9 +131,60 @@ def _run_query(args: argparse.Namespace) -> int:
     return 1
 
 
+def _print_index_block(indexes: list[FullTextIndex]) -> None:
+    """The searchable surface. An index agents cannot discover may as well not exist."""
+    if not indexes:
+        return
+
+    print()
+    print("Full-text search indexes")
+    print()
+    _format_table(
+        ["table", "key", "indexed columns", "documents"],
+        [
+            (
+                index.table,
+                index.key_column,
+                ", ".join(index.columns),
+                f"{index.document_count:,}",
+            )
+            for index in indexes
+        ],
+    )
+    # Declaration order, so the example is `issues` -- which reads as an example in a
+    # way that a comment table does not.
+    example = indexes[0]
+    print()
+    print("Search a table by scoring its key column against its own index:")
+    # The subquery form, not `WHERE` on a bare alias: the projection keeps a copied
+    # example from returning whole bodies, and an alias in WHERE would silently bind to
+    # a real `score` column if an indexed table ever grew one.
+    print("  SELECT number, title, score FROM (")
+    print(
+        f"      SELECT *, fts_github_{example.table}."
+        f"match_bm25({example.key_column}, 'search terms') AS score FROM {example.table}"
+    )
+    print("  ) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10")
+    print()
+    print(
+        "The macro is keyed on the document id and is not bound to the indexed table, "
+        "so it also works"
+    )
+    print("from any relation carrying that id. An id the index does not hold scores NULL.")
+
+
 def _run_schema(args: argparse.Namespace) -> int:
     try:
         if args.table:
+            indexes = [i for i in get_full_text_indexes() if i.table == args.table]
+            if indexes:
+                index = indexes[0]
+                print(
+                    f"Full-text search: fts_github_{index.table}."
+                    f"match_bm25({index.key_column}, 'query') "
+                    f"over {', '.join(index.columns)} ({index.document_count:,} documents)"
+                )
+                print()
             columns = get_table_columns(args.table)
             has_descriptions = any(desc is not None for _, _, _, desc in columns)
             if has_descriptions:
@@ -151,6 +212,7 @@ def _run_schema(args: argparse.Namespace) -> int:
         else:
             for table in tables:
                 print(table)
+        _print_index_block(get_full_text_indexes())
         return 0
     except Exception as exc:
         print(f"Schema inspection failed: {exc}", file=sys.stderr)

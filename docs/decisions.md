@@ -123,3 +123,160 @@ conversation comments on issues *and* pull requests, so the name actively mislea
 `name` and `endpoint.path` are separate, so the tables are renamed without touching the API calls.
 Spelled out rather than abbreviated (`pull_requests`, not `prs`) because nothing else in the schema
 is abbreviated.
+
+## 2026-08-07 — Full-text search
+
+From [#13](https://github.com/jayqi/ghtriage/issues/13) — see
+[the plan](/docs/plans/archive/2026-08-07-full-text-search.md) for the full reasoning and the
+measurements behind it.
+
+**GitHub's `id` is the full-text document key, not dlt's `_dlt_id`.**
+Rejected: `_dlt_id`, which #13 proposed as the natural key. dlt assigns it at extract time rather
+than deriving it from content, so an edited row's `_dlt_id` changes on the pull that picks the edit
+up — no good as a handle that outlives a pull. `id` is GitHub's permanent identifier, is dlt's merge
+key, and is a column agents already select. Uniqueness is the load-bearing part either way:
+`create_fts_index` validates nothing, and rows sharing a key all silently report the first one's
+score. dlt's merge on `id` is what guarantees uniqueness, so a test pins that declaration on the
+source config rather than a runtime check re-verifying the loader on every pull (see the
+2026-08-08 section "Defensive-layer simplification").
+
+**Thread tables are materialized tables, not views.**
+Rejected: views, per the 2026-08-06 entry "Views, not materialized tables". That entry rejected
+materialization because of the invalidation cost; here it is already paid. DuckDB cannot index a
+view at all, and an FTS index has no incremental update — it is rebuilt from scratch on every pull
+regardless — so the table is rebuilt in the same step for 5–13 ms.
+
+**Thread documents fold both pull request comment channels together.**
+Rejected: mirroring the separation `pull_request_activity` keeps for counts. Whether a PR got
+discussion or code review is a fact about engagement and stays split; a search corpus just wants all
+the words.
+
+**The derived views carry `id` as their first column.**
+Rejected: leaving it out as dlt plumbing redundant with `number`. `match_bm25` is keyed on the
+document id and is not bound to the indexed table, so this one column turns "search, then filter on
+derived facts" from a join into a plain `WHERE`. It leads the projection rather than trailing it
+because a key nobody can find is a key nobody uses. It is padded like any other optional column, so
+a database whose base table predates it still gets the full column set.
+
+**The default `ignore` pattern is kept (digits are not searchable); the stopword list is not
+(`stopwords='none'`).**
+Rejected, on digits: `ignore='(\.|[^a-z0-9])+'`, which makes `404` findable but stops `python`
+matching `python3.11` — it tokenizes as `python3` + `11`. Exact codes and versions are what `LIKE`
+and `regexp_matches` already do well, and full-text search is a complement to the SQL filters
+rather than a replacement.
+Rejected, on stopwords: the default 571-word English list, which on software text eats domain
+vocabulary — `get`, `old`, and, because filtering applies to *stemmed* tokens, every word whose
+Porter stem collides with the list (`use` → `us`) — so its damage cannot be enumerated by reading
+it. A filtered term returns a confident empty result, and one such word inside a
+`conjunctive := 1` query empties the whole result set. BM25's IDF weighting already down-ranks
+ubiquitous terms; the accepted cost is that match *counts* inflate for queries carrying very
+common words, which the README folds into "read the ranking, not the match count." A curated
+minimal list was also rejected: it would have to be curated in stem space, and it is a maintained
+judgment of the kind this project avoids (cf. the rejected agent-login list).
+
+**No `search` subcommand and no SQL macro wrapper.**
+Rejected: a `search_issues(q)` table macro. It works and composes with `WHERE`, but macros are
+invisible to `information_schema.tables` and reject `COMMENT ON`, so the schema-transparency
+mechanism the rest of the project relies on cannot document them. The raw syntax is surfaced through
+`ghtriage schema` instead.
+
+**An explicit `duckdb>=1.2` pin.**
+Rejected: continuing to inherit duckdb through `dlt[duckdb]`, whose floor is `duckdb>=0.9` — a
+floor under which `COMMENT ON` does not exist, so the project has been misdeclaring its
+requirements since #11. 1.2 is where the full-text behavior here was checked by hand. Note that CI
+has no duckdb matrix: it resolves the lockfile, so only the pinned version is ever exercised and
+the floor is asserted rather than tested. Worth a floor job if the range ever widens.
+
+## 2026-08-08 — Derived objects in one module
+
+Follow-up reorganization after [#13](https://github.com/jayqi/ghtriage/issues/13); no behavior
+changed.
+
+**Views and thread tables live together in `derived.py`, built by one `create_derived`.**
+Rejected: keeping the thread tables with the indexer that consumes them, on the grounds that
+building and indexing in one function cannot be mis-ordered. But `_create_one` and
+`_build_thread_table` were the same function twice — same skip-if-base-missing, same
+`CREATE OR REPLACE` through the slot renderer, same comment reapplication, same catch-and-warn —
+and sharing helpers between two modules would have left both copies of the loop. The four objects
+are one kind of thing to a user and now to the code: one registry, one build path parameterized by
+`VIEW` or `TABLE`, one docs convention, one drift guard covering all four.
+
+**`full_text_search` depends on `derived` having run, and that is not treated as a hazard.**
+Rejected: defending the ordering with structure. Materialize, then index is how indexing works
+everywhere; a maintainer arrives knowing it. `run_pull` pins the order, a test pins `run_pull`,
+and `create_search_indexes` states the precondition. What makes a failure survivable rather than
+silent is that neither module leaves behind an object it could not rebuild this pull: a derived
+object or index that cannot be built is dropped, so a later search errors on a missing relation
+instead of scoring the previous pull's text. See the 2026-08-07 entry "Thread tables are
+materialized, not views" for why they are tables at all.
+
+**Every step after the load is attempted, reported, and survived, and that decision lives in
+`run_pull`.**
+Rejected: each builder guarding itself. A module swallowing its own failures is deciding what a
+pull is worth, which is the orchestrator's call. The builders raise, and return a message for any
+single object they could not build; `run_pull` collects both and exits 0, because the raw tables
+landed and they are what a pull is for. The CLI follows any warnings with a pointer at
+`ghtriage pull --full`, which is the recovery path for every post-load state. Only the skips stay
+inside the builders, as notes on stderr: an object with no source table yet is not a failure, and a
+young repository legitimately skips several.
+
+## 2026-08-08 — Defensive-layer simplification
+
+Scope reduction of the #13 defensive machinery before it shipped — see
+[the plan](/docs/plans/archive/2026-08-08-simplify-derived-and-fts.md) for the failure taxonomy
+and boundary rule these decisions apply, and for the review protocol that goes with them.
+
+**Absent upstream data is handled by one declaration-driven padding combinator, applied to every
+source a derived object reads — base tables included.**
+Rejected: four coexisting mechanisms — padding CTEs inside the SQL, a stand-in dict for absent
+tables, per-slot column probes deciding real-vs-stand-in, and `requires` tuples gating whole
+objects — each skip path needing its own drop logic, stderr note, and tests. Padding by
+`UNION ALL BY NAME` makes a missing column a non-event without probing, so the only remaining
+check is whether the base table exists at all. The 2026-08-06 decision that views degrade to
+typed NULLs and empty relations stands; this changes the mechanism, not the behavior.
+
+**A `sources` declaration lists every column the SQL reads, not just the ones dlt might omit.**
+Rejected: padding only observed-missing columns. Deciding which columns "might" be absent is a
+judgment renewed at every review; declaring all of them is mechanical, self-documenting, and
+padding an always-present column costs nothing.
+
+**No runtime key-uniqueness check before indexing.**
+Rejected: `_key_is_usable`, a per-pull full-table scan re-verifying what dlt's merge on `id`
+already guarantees. A broken merge key means the whole database is wrong, not just BM25 scores. A
+test pins `primary_key: id` + `write_disposition: merge` on every resource declaration instead —
+the layer that provides the guarantee is the layer that gets the test.
+
+**A full-text index covers all its declared columns, or is not built.**
+Rejected: indexing whichever declared columns happen to exist. A search that silently covers only
+`title` because `body` was absent returns plausible, wrong-by-omission results — the one failure
+class this project defends hardest against. A build over a missing column fails into the existing
+drop-and-warn path instead. This is also what lets `ghtriage schema` report indexes from the
+declaration: a present index always matches it exactly.
+
+**A post-load failure warns and advises `pull --full`; nothing is dropped beyond the object that
+failed.**
+Rejected: cascading `drop_derived_objects` when the derive step failed wholesale. The per-object
+paths already drop what they could not rebuild; the wholesale case leaves the user one known,
+cheap command from clean, and the CLI now says so next to the warnings.
+
+## 2026-08-10 — Full-text index corpora
+
+Post-review follow-up to #13; resolves the "six indexes → four" question the
+[2026-08-08 plan](/docs/plans/archive/2026-08-08-simplify-derived-and-fts.md) deferred.
+
+**All six indexes stay: the base title/body indexes are not subsumed by the thread indexes.**
+Rejected: dropping `fts_github_issues` and `fts_github_pull_requests` as redundant with the
+thread indexes. A thread document mixes what an issue is *about* with everything ever said in it
+— pasted stack traces, tangents, cross-references — so BM25 over threads answers "was this
+mentioned?" while title+body is the only corpus that answers "is this what the issue is about?"
+without that noise. Both are real triage questions, and the two extra indexes cost two dict
+entries and tens of milliseconds per pull. The README documents which corpus answers which
+question instead of warning about picking the wrong one.
+
+**A table and its thread table sharing an id space is documented as the model, not defended as a
+hazard.**
+Rejected: prose warning that pairing a table with the wrong index misbehaves. The base and thread
+indexes hold the same ids over different text *by design* — same entities, different corpora — so
+crossing them is not an anomaly to detect but a corpus choice to make deliberately. The earlier
+"wrong index returns nothing" diagnostic was factually false for exactly these pairs (every id
+hits) and taught the false contrapositive that a non-empty result proves the right index.

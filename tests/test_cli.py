@@ -2,11 +2,13 @@ import csv
 import io
 import json
 from pathlib import Path
+import re
 
 import duckdb
 import pytest
 
 from ghtriage.cli import run
+from ghtriage.query import execute_query
 
 
 @pytest.fixture
@@ -94,6 +96,36 @@ def test_query_rejects_write_sql_in_read_only_mode(sample_cwd: Path, monkeypatch
     captured = capsys.readouterr()
     assert rc == 1
     assert "Query failed" in captured.err
+
+
+def test_pull_points_at_a_full_refresh_when_a_step_warned(tmp_path: Path, monkeypatch, capsys):
+    """Every post-load failure has the same one-command recovery, so say it next to them."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda cli_repo=None: "owner/repo")
+    monkeypatch.setattr(
+        "ghtriage.cli.run_pull",
+        lambda **_kwargs: ("load info", ["derived objects failed: boom"]),
+    )
+
+    rc = run(["pull"])
+
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "derived objects failed: boom" in err
+    assert "ghtriage pull --full" in err
+
+
+def test_pull_says_nothing_extra_when_no_step_warned(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda cli_repo=None: "owner/repo")
+    monkeypatch.setattr("ghtriage.cli.run_pull", lambda **_kwargs: ("load info", []))
+
+    rc = run(["pull"])
+
+    assert rc == 0
+    assert capsys.readouterr().err == ""
 
 
 def test_schema_lists_user_tables(sample_cwd: Path, monkeypatch, capsys) -> None:
@@ -292,3 +324,127 @@ def test_schema_table_details_works_on_a_view(cwd_with_view: Path, monkeypatch, 
     out = capsys.readouterr().out
     assert rc == 0
     assert "Pass-through of issues.id." in out
+
+
+@pytest.fixture
+def cwd_with_index(sample_cwd: Path) -> Path:
+    """sample_cwd plus a full-text index, as create_search_indexes() would leave it.
+
+    Over the declared columns: an index that cannot cover them all is dropped instead,
+    which is what lets `schema` report the declaration.
+    """
+    db_path = sample_cwd / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("ALTER TABLE github.issues ADD COLUMN body VARCHAR")
+        con.execute("PRAGMA create_fts_index('github.issues', 'id', 'title', 'body', overwrite=1)")
+    return sample_cwd
+
+
+def test_schema_listing_shows_full_text_indexes(cwd_with_index: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(cwd_with_index)
+
+    rc = run(["schema"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Full-text search indexes" in out
+    assert "fts_github_issues.match_bm25" in out
+    # The index's row: key and column set from the declaration, count from the table.
+    # Matched together so neither can be satisfied by text elsewhere in the output.
+    assert re.search(r"issues\s*\|\s*id\s*\|\s*title, body\s*\|\s*2\b", out)
+
+
+def test_schema_listing_omits_index_block_when_there_are_none(
+    sample_cwd: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(sample_cwd)
+
+    rc = run(["schema"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Full-text search" not in out
+
+
+def test_schema_listing_says_where_the_macro_can_be_called_from(
+    cwd_with_index: Path, monkeypatch, capsys
+) -> None:
+    """That the macro travels with the id is what makes it worth surfacing at all."""
+    monkeypatch.chdir(cwd_with_index)
+
+    run(["schema"])
+
+    out = capsys.readouterr().out
+    assert "not bound to the indexed table" in out
+    assert "An id the index does not hold scores NULL." in out
+
+
+def test_schema_table_details_shows_the_index(cwd_with_index: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(cwd_with_index)
+
+    rc = run(["schema", "--table", "issues"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "fts_github_issues.match_bm25(id, 'query') over title, body (2 documents)" in out
+
+
+def test_schema_table_details_omits_index_line_for_unindexed_table(
+    cwd_with_index: Path, monkeypatch, capsys
+) -> None:
+    db_path = cwd_with_index / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("CREATE TABLE github.other (id BIGINT)")
+    monkeypatch.chdir(cwd_with_index)
+
+    run(["schema", "--table", "other"])
+
+    assert "match_bm25" not in capsys.readouterr().out
+
+
+def test_schema_index_example_uses_the_first_declared_table(
+    cwd_with_index: Path, monkeypatch, capsys
+) -> None:
+    """Declaration order, so the example is `issues` rather than a comment table."""
+    db_path = cwd_with_index / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("CREATE TABLE github.conversation_comments (id BIGINT, body VARCHAR)")
+        con.execute("INSERT INTO github.conversation_comments VALUES (1, 'a comment')")
+        con.execute(
+            "PRAGMA create_fts_index('github.conversation_comments', 'id', 'body', overwrite=1)"
+        )
+    monkeypatch.chdir(cwd_with_index)
+
+    run(["schema"])
+
+    out = capsys.readouterr().out
+    assert "SELECT number, title, score FROM (" in out
+    assert "fts_github_issues.match_bm25(id, 'search terms') AS score FROM issues" in out
+
+
+def test_schema_index_example_executes_as_printed(
+    cwd_with_index: Path, monkeypatch, capsys
+) -> None:
+    """The example is guidance agents copy verbatim, so the suite runs it verbatim --
+    lifted from the actual output, with only the search terms substituted."""
+    db_path = cwd_with_index / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("ALTER TABLE github.issues ADD COLUMN number BIGINT")
+        con.execute("UPDATE github.issues SET number = id")
+        con.execute("UPDATE github.issues SET body = 'segfault on startup' WHERE id = 1")
+        con.execute("PRAGMA create_fts_index('github.issues', 'id', 'title', 'body', overwrite=1)")
+    monkeypatch.chdir(cwd_with_index)
+
+    run(["schema"])
+
+    lines = capsys.readouterr().out.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("Search a table"))
+    example = "\n".join(lines[start + 1 : start + 4])
+    # Through execute_query, the path a copied example actually takes in `ghtriage query`.
+    columns, results = execute_query(example.replace("'search terms'", "'segfault'"))
+
+    assert columns == ["number", "title", "score"]
+    assert len(results) == 1
+    number, title, score = results[0]
+    assert (number, title) == (1, "First")
+    assert score is not None

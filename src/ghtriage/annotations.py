@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-import sys
 import urllib.error
 import urllib.request
 
@@ -139,13 +138,9 @@ def fetch_and_annotate(db_path: Path) -> None:
     """
     Fetch the GitHub OpenAPI spec and annotate the database with field descriptions.
 
-    This is best-effort: any failure prints a warning to stderr and returns without
-    raising, so annotation failures never cause the pull to fail.
+    Raises if the spec cannot be fetched or applied.
     """
-    try:
-        spec = fetch_spec(OPENAPI_SPEC_URL)
-        table_descs = build_table_descriptions(spec)
-        column_descs = build_column_descriptions(spec)
-        annotate_database(db_path, table_descs, column_descs)
-    except Exception as exc:
-        print(f"Warning: schema annotation failed: {exc}", file=sys.stderr)
+    spec = fetch_spec(OPENAPI_SPEC_URL)
+    table_descs = build_table_descriptions(spec)
+    column_descs = build_column_descriptions(spec)
+    annotate_database(db_path, table_descs, column_descs)

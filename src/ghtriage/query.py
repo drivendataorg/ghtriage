@@ -4,6 +4,7 @@ from pathlib import Path
 import duckdb
 
 from ghtriage.config import get_db_path
+from ghtriage.full_text_search import INDEXES, index_schema
 
 _MAIN_TABLES = ("issues", "pull_requests", "conversation_comments", "review_comments")
 
@@ -101,6 +102,44 @@ def get_table_descriptions(cwd: str | Path | None = None) -> dict[str, str]:
 
 
 @dataclass
+class FullTextIndex:
+    table: str
+    key_column: str
+    columns: list[str]
+    document_count: int
+
+
+def get_full_text_indexes(cwd: str | Path | None = None) -> list[FullTextIndex]:
+    """Return the declared full-text indexes that exist, in declaration order.
+
+    The declaration is authoritative: an index that cannot cover exactly its declared
+    key and columns is dropped rather than built, so there is nothing to introspect.
+    The document count comes from the indexed table, which equals the index's own count
+    because the two are rebuilt in the same pull and nothing writes between pulls. An
+    `fts_github_%` schema ghtriage did not declare is not ours to describe, so it is
+    left out rather than half-reported.
+    """
+    db_path = _resolve_db_path(cwd=cwd)
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        present = {
+            row[0]
+            for row in conn.execute(
+                "SELECT schema_name FROM duckdb_schemas() WHERE schema_name LIKE 'fts_github_%'"
+            ).fetchall()
+        }
+        return [
+            FullTextIndex(
+                table=table,
+                key_column=key_column,
+                columns=list(columns),
+                document_count=conn.execute(f"SELECT count(*) FROM github.{table}").fetchone()[0],
+            )
+            for table, (key_column, columns) in INDEXES.items()
+            if index_schema(table) in present
+        ]
+
+
+@dataclass
 class StatusData:
     db_path: Path
     db_size_bytes: int
@@ -132,7 +171,7 @@ def get_status_data(cwd: str | Path | None = None) -> StatusData:
         for table in _MAIN_TABLES:
             try:
                 row = conn.execute(
-                    f"SELECT COUNT(*), MAX(updated_at) FROM github.{table}"  # noqa: S608
+                    f"SELECT COUNT(*), MAX(updated_at) FROM github.{table}"
                 ).fetchone()
                 count = row[0] or 0
                 max_updated_at = str(row[1])[:19] if row[1] is not None else None

@@ -9,7 +9,8 @@ import duckdb
 
 from ghtriage.annotations import fetch_and_annotate
 from ghtriage.config import get_db_path, get_pipelines_dir
-from ghtriage.views import create_views
+from ghtriage.derived import create_derived
+from ghtriage.full_text_search import create_search_indexes
 
 
 def _split_repo(repo: str) -> tuple[str, str]:
@@ -165,11 +166,33 @@ def run_pull(
     pipeline = create_pipeline(cwd=cwd)
     source = build_rest_api_source(repo=repo, token=token)
     load_info = pipeline.run(source)
-    meta_error: Exception | None = None
+
+    # The load is what a pull is for; everything below decorates it, and any of it
+    # failing still leaves the raw tables usable. Each step is attempted, reported and
+    # survived -- this is the only place that judgment is made.
+    warnings: list[str] = []
+
     try:
         _write_meta(db_path=db_path, repo=repo, full=full)
     except Exception as exc:
-        meta_error = exc
-    create_views(db_path)
-    fetch_and_annotate(db_path)
-    return load_info, meta_error
+        warnings.append(f"metadata write failed: {exc}")
+
+    try:
+        warnings.extend(create_derived(db_path))
+    except Exception as exc:
+        # Per-object failures already drop what they could not rebuild. A wholesale
+        # failure -- the database cannot be opened or probed -- leaves the user one
+        # `ghtriage pull --full` from clean, which the CLI says next to this warning.
+        warnings.append(f"derived objects failed: {exc}")
+
+    try:
+        warnings.extend(create_search_indexes(db_path))
+    except Exception as exc:
+        warnings.append(f"full-text indexes failed: {exc}")
+
+    try:
+        fetch_and_annotate(db_path)
+    except Exception as exc:
+        warnings.append(f"schema annotation failed: {exc}")
+
+    return load_info, warnings

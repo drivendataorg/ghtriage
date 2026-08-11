@@ -27,7 +27,7 @@ Or run it without installing:
 uvx --from git+https://github.com/jayqi/ghtriage ghtriage --help
 ```
 
-Any tool that installs from a Git URL (`pip`, `pipx`) also works. Requires Python 3.13+.
+Any tool that installs from a Git URL (`pip`, `pipx`) also works. Requires Python 3.10+.
 
 ## Usage
 
@@ -66,6 +66,7 @@ ghtriage schema --table issue_activity
 ghtriage query "SELECT number, title, state FROM issues LIMIT 5"
 ghtriage query "SELECT count(*) AS n FROM issues" --format json
 ghtriage query "SELECT number, title FROM issue_activity WHERE state = 'open' AND first_non_author_comment_at IS NULL"
+ghtriage query "SELECT number, title, score FROM (SELECT number, title, round(fts_github_issue_threads.match_bm25(id, 'cache invalidation'), 2) AS score FROM issue_activity) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 5"
 ```
 
 ### Exit codes
@@ -105,20 +106,48 @@ Some behaviors to be aware of:
 
 Nested arrays become child tables named with a double-underscore, e.g., `issues__labels`, and can be joined to their parent on `_dlt_parent_id = _dlt_id`.
 
-If any entity has zero records, then no table will be created rather than an empty. Run `ghtriage schema` for the authoritative list of what your
+If any entity has zero records, no table is created rather than an empty one. Run `ghtriage schema` for the authoritative list of what your
 database actually holds.
 
-### Derived views
+### Derived tables and views
 
-Every `ghtriage pull` also builds derived views that pre-compute facts and joins that are useful for triaging.
+Every `ghtriage pull` also builds four derived objects. All are rebuilt each time the data refreshes, and every column carries a description you can read with `ghtriage schema --table <name>`.
 
 - **`issue_activity`** — one row per issue, with comment counts and timestamps, labels, and assignees already joined.
 - **`pull_request_activity`** — one row per pull request, the same plus review-comment facts and pending review requests.
+- **`issue_threads`** — one full-text document per issue: its title, body, and every conversation comment on it, oldest first.
+- **`pull_request_threads`** — one full-text document per pull request, folding in both conversation and review comments.
 
-They are rebuilt each time the data refreshes, and every column carries a description you can read with `ghtriage schema --table <view>`. Details about them worth knowing:
+The thread tables exist to be searched — see [Full-text search](#full-text-search).
 
-- **A repository with zero issues or zero pull requests will not get the respective view.** A view is built from a table, and there is no table until at least one record of that kind has been pulled. Query `ghtriage schema` to see which views exist rather than assuming both do.
-- **Pull requests have two separate comment channels.** GitHub's issue-comments endpoint carries conversation comments on both issues and pull requests, while the pull-comments endpoint carries only inline review comments — which is why the tables are named `conversation_comments` and `review_comments` rather than after the endpoints they come from. `pull_request_activity` exposes both as separate columns rather than adding them together, because a PR can have a long discussion and no code review, or the reverse.
-- **Bot activity is split out, not filtered.** `comment_count` counts everything, and `non_bot_comment_count` counts only accounts GitHub does not type as `Bot`. Whether a bot comment means the issue got attention is a judgment, so both numbers are available and neither is imposed. The same pattern applies to review comments and participants.
+Details worth knowing:
 
-Everything in these views is recomputable from the raw tables—they are a convenience layer.
+- **A repository with zero issues or zero pull requests will not get the respective view or thread table.** Each is built from a base table, and there is no table until at least one record of that kind has been pulled. Query `ghtriage schema` to see what exists rather than assuming.
+- **Pull requests have two separate comment channels.** GitHub's issue-comments endpoint carries conversation comments on both issues and pull requests; the pull-comments endpoint carries only inline review comments. `pull_request_activity` keeps them as separate columns — a PR can have a long discussion and no code review, or the reverse — while `pull_request_threads` folds them together.
+- **Bot activity is split out, not filtered.** `comment_count` counts everything; `non_bot_comment_count` counts only accounts GitHub does not type as `Bot`. Subtract for the bot count. The same pattern applies to review comments and participants.
+
+### Full-text search
+
+Every pull also builds BM25 full-text indexes, so "has this been reported before?" is a ranked query rather than a scan. The six indexes cover three different corpora over the same entities — pick the index by the question you are asking, not just by the table name:
+
+| Indexes | One document per | Search it to answer |
+|---|---|---|
+| `fts_github_issues` / `fts_github_pull_requests` | issue or pull request — **title and body only** | "Is there an issue *about* this?" — the author's own description, without noise from whatever was later said in the comments |
+| `fts_github_issue_threads` / `fts_github_pull_request_threads` | issue or pull request — **title, body, and every comment** | "Has this been *discussed* anywhere?" — a mention deep in a long thread still matches |
+| `fts_github_conversation_comments` / `fts_github_review_comments` | **single comment** — its body | "Which comment said it?" — each comment is scored on its own, so a thread that circles a topic ranks below one comment that says it all |
+
+Each index lives in a schema named for its table — `fts_github_issues`, `fts_github_issue_threads` — and exposes `match_bm25(id, 'query')`:
+
+```bash
+ghtriage query "SELECT number, title, score FROM (SELECT number, title, round(fts_github_issue_threads.match_bm25(id, 'timeout uploading large files'), 2) AS score FROM issue_activity) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10"
+```
+
+Run `ghtriage schema` for the indexes your database actually holds, with their columns and document counts. Things worth knowing:
+
+- **The score function is keyed on the document id, not bound to its table.** Both derived views carry `id`, so one relation gives you search and derived facts together — the example above searches whole threads while selecting from `issue_activity`. Filter on both at once: `SELECT number, title FROM issue_activity WHERE fts_github_issues.match_bm25(id, 'windows path') IS NOT NULL AND state = 'open'`.
+- **A table and its thread table share ids — their indexes differ in text, not in entities.** `fts_github_issues.match_bm25(id, …)` and `fts_github_issue_threads.match_bm25(id, …)` accept the same ids and score the same issue against different corpora, so mixing them up is not an error — it answers the other question in the table above. An id an index does not hold (a pull request id against an issue index) scores `NULL`.
+- **Digits are not indexed.** The tokenizer strips them, so searching `404` finds nothing. Use `LIKE` or `regexp_matches` for exact codes, versions, and identifiers.
+- **Terms are OR-ed and stemmed by default.** `'azure credential'` matches documents containing either word, and `renaming` matches `rename`. Pass `conjunctive := 1` to require every term.
+- **Every word is indexed — there is no stopword list.** On software text, `use`, `get`, and `old` are vocabulary, not noise, and BM25's frequency weighting already keeps ubiquitous words from dominating a ranking. The flip side: a query containing a very common word matches nearly every document, so read the ranking, not the match count.
+- **Scores rank results within a single query; they are not a similarity measure.** A score's scale depends on the corpus and the query's terms, so scores are not comparable across queries or across indexes. Take the top `n` with `ORDER BY score DESC`; don't filter on a fixed threshold.
+- **Indexes are rebuilt from scratch on every pull.** On a repository with ~2,500 documents this adds about half a second to a pull and roughly 40% to the database file.

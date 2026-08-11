@@ -2,8 +2,10 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import duckdb
+import pytest
 
-from ghtriage.pipeline import _write_meta, run_pull
+from ghtriage.full_text_search import INDEXES
+from ghtriage.pipeline import _write_meta, build_rest_api_source, run_pull
 
 
 def _install_pipeline_mocks(monkeypatch):
@@ -23,11 +25,22 @@ def _install_pipeline_mocks(monkeypatch):
     mock_write_meta = Mock()
     monkeypatch.setattr("ghtriage.pipeline._write_meta", mock_write_meta)
     call_order: list[str] = []
-    mock_create_views = Mock(side_effect=lambda *_a, **_k: call_order.append("create_views"))
-    monkeypatch.setattr("ghtriage.pipeline.create_views", mock_create_views)
-    mock_fetch_and_annotate = Mock(
-        side_effect=lambda *_a, **_k: call_order.append("fetch_and_annotate")
-    )
+
+    def records(step: str, result=None):
+        """Note that the step ran, and return what the real one returns."""
+
+        def run(*_args, **_kwargs):
+            call_order.append(step)
+            return result
+
+        return run
+
+    # The two builders return a list of per-object failures; the others return nothing.
+    mock_create_derived = Mock(side_effect=records("create_derived", []))
+    monkeypatch.setattr("ghtriage.pipeline.create_derived", mock_create_derived)
+    mock_create_search_indexes = Mock(side_effect=records("create_search_indexes", []))
+    monkeypatch.setattr("ghtriage.pipeline.create_search_indexes", mock_create_search_indexes)
+    mock_fetch_and_annotate = Mock(side_effect=records("fetch_and_annotate"))
     monkeypatch.setattr("ghtriage.pipeline.fetch_and_annotate", mock_fetch_and_annotate)
 
     return (
@@ -40,7 +53,8 @@ def _install_pipeline_mocks(monkeypatch):
         mock_rest_api_source,
         mock_write_meta,
         mock_fetch_and_annotate,
-        mock_create_views,
+        mock_create_derived,
+        mock_create_search_indexes,
         call_order,
     )
 
@@ -56,14 +70,15 @@ def test_run_pull_smoke_full_false_calls_pipeline_run_once(tmp_path: Path, monke
         mock_rest_api_source,
         mock_write_meta,
         mock_fetch_and_annotate,
-        mock_create_views,
+        mock_create_derived,
+        _mock_create_search_indexes,
         call_order,
     ) = _install_pipeline_mocks(monkeypatch)
 
-    load_info, meta_error = run_pull(repo="owner/repo", token="tok", full=False, cwd=tmp_path)
+    load_info, warnings = run_pull(repo="owner/repo", token="tok", full=False, cwd=tmp_path)
 
     assert load_info is sentinel_run_result
-    assert meta_error is None
+    assert warnings == []
     mock_pipeline_obj.run.assert_called_once_with(sentinel_source)
 
     db_path = tmp_path / ".ghtriage" / "ghtriage.duckdb"
@@ -102,7 +117,8 @@ def test_run_pull_full_true_removes_existing_state_then_runs(tmp_path: Path, mon
         _mock_rest_api_source,
         _mock_write_meta,
         _mock_fetch_and_annotate,
-        _mock_create_views,
+        _mock_create_derived,
+        _mock_create_search_indexes,
         _call_order,
     ) = _install_pipeline_mocks(monkeypatch)
 
@@ -115,10 +131,10 @@ def test_run_pull_full_true_removes_existing_state_then_runs(tmp_path: Path, mon
     old_pipeline_file.write_text("old", encoding="utf-8")
     old_db_path.write_text("old", encoding="utf-8")
 
-    load_info, meta_error = run_pull(repo="owner/repo", token="tok", full=True, cwd=tmp_path)
+    load_info, warnings = run_pull(repo="owner/repo", token="tok", full=True, cwd=tmp_path)
 
     assert load_info is sentinel_run_result
-    assert meta_error is None
+    assert warnings == []
     assert not old_db_path.exists()
     assert not old_pipeline_file.exists()
     mock_pipeline_obj.run.assert_called_once_with(sentinel_source)
@@ -135,14 +151,15 @@ def test_run_pull_full_true_handles_missing_state(tmp_path: Path, monkeypatch) -
         _mock_rest_api_source,
         _mock_write_meta,
         _mock_fetch_and_annotate,
-        _mock_create_views,
+        _mock_create_derived,
+        _mock_create_search_indexes,
         _call_order,
     ) = _install_pipeline_mocks(monkeypatch)
 
-    load_info, meta_error = run_pull(repo="owner/repo", token="tok", full=True, cwd=tmp_path)
+    load_info, warnings = run_pull(repo="owner/repo", token="tok", full=True, cwd=tmp_path)
 
     assert load_info is sentinel_run_result
-    assert meta_error is None
+    assert warnings == []
     mock_pipeline_obj.run.assert_called_once_with(sentinel_source)
 
 
@@ -157,7 +174,8 @@ def test_run_pull_builds_source_with_repo_and_token(tmp_path: Path, monkeypatch)
         mock_rest_api_source,
         _mock_write_meta,
         _mock_fetch_and_annotate,
-        _mock_create_views,
+        _mock_create_derived,
+        _mock_create_search_indexes,
         _call_order,
     ) = _install_pipeline_mocks(monkeypatch)
 
@@ -202,7 +220,7 @@ def test_write_meta_is_idempotent(tmp_path: Path) -> None:
     assert meta["last_full_pull"] == "true"
 
 
-def test_run_pull_creates_views_before_annotating(tmp_path: Path, monkeypatch) -> None:
+def test_run_pull_creates_derived_before_annotating(tmp_path: Path, monkeypatch) -> None:
     (
         _sentinel_destination,
         _sentinel_source,
@@ -213,7 +231,8 @@ def test_run_pull_creates_views_before_annotating(tmp_path: Path, monkeypatch) -
         _mock_rest_api_source,
         _mock_write_meta,
         _mock_fetch_and_annotate,
-        mock_create_views,
+        mock_create_derived,
+        _mock_create_search_indexes,
         call_order,
     ) = _install_pipeline_mocks(monkeypatch)
     monkeypatch.chdir(tmp_path)
@@ -221,11 +240,11 @@ def test_run_pull_creates_views_before_annotating(tmp_path: Path, monkeypatch) -
     run_pull(repo="owner/repo", token="t", full=False)
 
     db_path = tmp_path / ".ghtriage" / "ghtriage.duckdb"
-    mock_create_views.assert_called_once_with(db_path)
-    assert call_order == ["create_views", "fetch_and_annotate"]
+    mock_create_derived.assert_called_once_with(db_path)
+    assert call_order == ["create_derived", "create_search_indexes", "fetch_and_annotate"]
 
 
-def test_run_pull_creates_views_on_full_rebuild(tmp_path: Path, monkeypatch) -> None:
+def test_run_pull_creates_derived_on_full_rebuild(tmp_path: Path, monkeypatch) -> None:
     (
         _sentinel_destination,
         _sentinel_source,
@@ -236,12 +255,123 @@ def test_run_pull_creates_views_on_full_rebuild(tmp_path: Path, monkeypatch) -> 
         _mock_rest_api_source,
         _mock_write_meta,
         _mock_fetch_and_annotate,
-        mock_create_views,
+        mock_create_derived,
+        _mock_create_search_indexes,
         call_order,
     ) = _install_pipeline_mocks(monkeypatch)
     monkeypatch.chdir(tmp_path)
 
     run_pull(repo="owner/repo", token="t", full=True)
 
-    mock_create_views.assert_called_once()
-    assert call_order == ["create_views", "fetch_and_annotate"]
+    mock_create_derived.assert_called_once()
+    assert call_order == ["create_derived", "create_search_indexes", "fetch_and_annotate"]
+
+
+def test_run_pull_builds_search_indexes_between_derived_and_annotation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (
+        _sentinel_destination,
+        _sentinel_source,
+        _sentinel_run_result,
+        _mock_duckdb_factory,
+        _mock_pipeline_obj,
+        _mock_pipeline_factory,
+        _mock_rest_api_source,
+        _mock_write_meta,
+        _mock_fetch_and_annotate,
+        _mock_create_derived,
+        mock_create_search_indexes,
+        call_order,
+    ) = _install_pipeline_mocks(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    run_pull(repo="owner/repo", token="t", full=False)
+
+    db_path = tmp_path / ".ghtriage" / "ghtriage.duckdb"
+    mock_create_search_indexes.assert_called_once_with(db_path)
+    assert call_order == ["create_derived", "create_search_indexes", "fetch_and_annotate"]
+
+
+# ---------------------------------------------------------------------------
+# A pull survives every decorating step failing
+# ---------------------------------------------------------------------------
+#
+# The build steps raise; whether that costs the pull is decided here, which is why
+# these live with the orchestrator rather than with the modules that raise.
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("ghtriage.pipeline._write_meta", "metadata write failed"),
+        ("ghtriage.pipeline.create_derived", "derived objects failed"),
+        ("ghtriage.pipeline.create_search_indexes", "full-text indexes failed"),
+        ("ghtriage.pipeline.fetch_and_annotate", "schema annotation failed"),
+    ],
+)
+def test_run_pull_survives_and_reports_a_failed_step(
+    tmp_path: Path, monkeypatch, target: str, expected: str
+) -> None:
+    _install_pipeline_mocks(monkeypatch)
+    monkeypatch.setattr(target, Mock(side_effect=RuntimeError("boom")))
+    monkeypatch.chdir(tmp_path)
+
+    _load_info, warnings = run_pull(repo="owner/repo", token="t", full=False)
+
+    assert [w for w in warnings if w.startswith(expected)]
+    assert "boom" in warnings[0]
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("ghtriage.pipeline.create_derived", "could not create view issue_activity"),
+        ("ghtriage.pipeline.create_search_indexes", "could not build the full-text index"),
+    ],
+)
+def test_run_pull_reports_a_single_object_that_failed_to_build(
+    tmp_path: Path, monkeypatch, target: str, expected: str
+) -> None:
+    """One object failing is not a failed step, but it is still something to report.
+
+    Left only on stderr it would be invisible to `pull`'s exit path and to any caller
+    reading the return value.
+    """
+    _install_pipeline_mocks(monkeypatch)
+    monkeypatch.setattr(target, Mock(return_value=[expected]))
+    monkeypatch.chdir(tmp_path)
+
+    _load_info, warnings = run_pull(repo="owner/repo", token="t", full=False)
+
+    assert expected in warnings
+
+
+# ---------------------------------------------------------------------------
+# The loader guarantee the full-text indexes rest on
+# ---------------------------------------------------------------------------
+
+
+def test_every_indexed_resource_merges_on_id(monkeypatch) -> None:
+    """`id` is the full-text document key, and dlt's merge is what makes it unique.
+
+    Nothing re-verifies that at index time: this is the layer that provides the
+    guarantee, so this is the layer that gets the test.
+    """
+    captured: dict = {}
+    monkeypatch.setattr(
+        "ghtriage.pipeline.rest_api_source", lambda config: captured.update(config)
+    )
+
+    build_rest_api_source(repo="owner/repo", token="t")
+
+    defaults = captured["resource_defaults"]
+    for resource in captured["resources"]:
+        assert resource.get("primary_key", defaults["primary_key"]) == "id", resource["name"]
+        assert resource.get("write_disposition", defaults["write_disposition"]) == "merge", (
+            resource["name"]
+        )
+
+    # Every raw table an index keys on `id` is one of these resources.
+    declared = {name for name in INDEXES if not name.endswith("_threads")}
+    assert declared == {resource["name"] for resource in captured["resources"]}
