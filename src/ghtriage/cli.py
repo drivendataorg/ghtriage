@@ -156,11 +156,15 @@ def _print_index_block(indexes: list[FullTextIndex]) -> None:
     example = indexes[0]
     print()
     print("Search a table by scoring its key column against its own index:")
+    # The subquery form, not `WHERE` on a bare alias: the projection keeps a copied
+    # example from returning whole bodies, and an alias in WHERE would silently bind to
+    # a real `score` column if an indexed table ever grew one.
+    print("  SELECT number, title, score FROM (")
     print(
-        f"  SELECT *, fts_github_{example.table}."
-        f"match_bm25({example.key_column}, 'search terms') AS score"
+        f"      SELECT *, fts_github_{example.table}."
+        f"match_bm25({example.key_column}, 'search terms') AS score FROM {example.table}"
     )
-    print(f"  FROM {example.table} WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10")
+    print("  ) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10")
     print()
     print(
         "The macro is keyed on the document id and is not bound to the indexed table, "

@@ -248,3 +248,25 @@ failed.**
 Rejected: cascading `drop_derived_objects` when the derive step failed wholesale. The per-object
 paths already drop what they could not rebuild; the wholesale case leaves the user one known,
 cheap command from clean, and the CLI now says so next to the warnings.
+
+## 2026-08-10 — Full-text index corpora
+
+Post-review follow-up to #13; resolves the "six indexes → four" question the
+[2026-08-08 plan](/docs/plans/archive/2026-08-08-simplify-derived-and-fts.md) deferred.
+
+**All six indexes stay: the base title/body indexes are not subsumed by the thread indexes.**
+Rejected: dropping `fts_github_issues` and `fts_github_pull_requests` as redundant with the
+thread indexes. A thread document mixes what an issue is *about* with everything ever said in it
+— pasted stack traces, tangents, cross-references — so BM25 over threads answers "was this
+mentioned?" while title+body is the only corpus that answers "is this what the issue is about?"
+without that noise. Both are real triage questions, and the two extra indexes cost two dict
+entries and tens of milliseconds per pull. The README documents which corpus answers which
+question instead of warning about picking the wrong one.
+
+**A table and its thread table sharing an id space is documented as the model, not defended as a
+hazard.**
+Rejected: prose warning that pairing a table with the wrong index misbehaves. The base and thread
+indexes hold the same ids over different text *by design* — same entities, different corpora — so
+crossing them is not an anomaly to detect but a corpus choice to make deliberately. The earlier
+"wrong index returns nothing" diagnostic was factually false for exactly these pairs (every id
+hits) and taught the false contrapositive that a non-empty result proves the right index.

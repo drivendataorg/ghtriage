@@ -1425,6 +1425,55 @@ def test_create_derived_pull_request_thread_includes_both_comment_channels(db: P
     assert "review 201" in text
 
 
+def test_create_derived_pull_request_thread_interleaves_channels_by_time(
+    tmp_path: Path,
+) -> None:
+    """One timeline, not one channel appended after the other: a review comment created
+    between two conversation comments lands between them in thread_text."""
+    path = tmp_path / "interleaved.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE SCHEMA github")
+    con.execute(
+        "CREATE TABLE github.pull_requests (id BIGINT, number BIGINT, title VARCHAR, "
+        "body VARCHAR, state VARCHAR, user__login VARCHAR, user__type VARCHAR, "
+        "created_at TIMESTAMP WITH TIME ZONE, updated_at TIMESTAMP WITH TIME ZONE, "
+        "_dlt_id VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO github.pull_requests "
+        "VALUES (1,1,'t','b','open','alice','User',now(),now(),'p1')"
+    )
+    con.execute(
+        "CREATE TABLE github.conversation_comments (issue_url VARCHAR, body VARCHAR, "
+        "created_at TIMESTAMP WITH TIME ZONE)"
+    )
+    con.executemany(
+        "INSERT INTO github.conversation_comments VALUES (?,?,?)",
+        [
+            (_api("issues", 1), "first conversation", _d(1)),
+            (_api("issues", 1), "second conversation", _d(3)),
+        ],
+    )
+    con.execute(
+        "CREATE TABLE github.review_comments (pull_request_url VARCHAR, body VARCHAR, "
+        "created_at TIMESTAMP WITH TIME ZONE)"
+    )
+    con.execute(
+        "INSERT INTO github.review_comments VALUES (?,?,?)",
+        [_api("pulls", 1), "review in between", _d(2)],
+    )
+    con.close()
+
+    create_derived(path)
+
+    (text,) = rows(path, "SELECT thread_text FROM github.pull_request_threads")[0]
+    assert (
+        text.index("first conversation")
+        < text.index("review in between")
+        < text.index("second conversation")
+    )
+
+
 def test_create_derived_thread_table_degrades_when_comment_table_missing(tmp_path: Path) -> None:
     """dlt does not create a comment table until a comment arrives."""
     path = tmp_path / "nocomments.duckdb"

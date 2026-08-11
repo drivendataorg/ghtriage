@@ -8,6 +8,7 @@ import duckdb
 import pytest
 
 from ghtriage.cli import run
+from ghtriage.query import execute_query
 
 
 @pytest.fixture
@@ -417,4 +418,33 @@ def test_schema_index_example_uses_the_first_declared_table(
     run(["schema"])
 
     out = capsys.readouterr().out
-    assert "SELECT *, fts_github_issues.match_bm25(id, 'search terms') AS score" in out
+    assert "SELECT number, title, score FROM (" in out
+    assert "fts_github_issues.match_bm25(id, 'search terms') AS score FROM issues" in out
+
+
+def test_schema_index_example_executes_as_printed(
+    cwd_with_index: Path, monkeypatch, capsys
+) -> None:
+    """The example is guidance agents copy verbatim, so the suite runs it verbatim --
+    lifted from the actual output, with only the search terms substituted."""
+    db_path = cwd_with_index / ".ghtriage" / "ghtriage.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("ALTER TABLE github.issues ADD COLUMN number BIGINT")
+        con.execute("UPDATE github.issues SET number = id")
+        con.execute("UPDATE github.issues SET body = 'segfault on startup' WHERE id = 1")
+        con.execute("PRAGMA create_fts_index('github.issues', 'id', 'title', 'body', overwrite=1)")
+    monkeypatch.chdir(cwd_with_index)
+
+    run(["schema"])
+
+    lines = capsys.readouterr().out.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("Search a table"))
+    example = "\n".join(lines[start + 1 : start + 4])
+    # Through execute_query, the path a copied example actually takes in `ghtriage query`.
+    columns, results = execute_query(example.replace("'search terms'", "'segfault'"))
+
+    assert columns == ["number", "title", "score"]
+    assert len(results) == 1
+    number, title, score = results[0]
+    assert (number, title) == (1, "First")
+    assert score is not None

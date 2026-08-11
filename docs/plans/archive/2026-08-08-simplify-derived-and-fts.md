@@ -343,7 +343,8 @@ update `docs/decisions.md` if any spec shifted during implementation; move this 
 - **Six indexes → four.** The `issues` and `pull_requests` title/body indexes are nearly
   subsumed by the thread indexes for "has this come up before?", but they answer
   "title/body only" scoping cheaply and each costs one dict entry under the simplified
-  machinery. Not worth deciding under this plan.
+  machinery. Not worth deciding under this plan. *Resolved 2026-08-10: kept at six — see the
+  decision log entry "All six indexes stay".*
 - **Declaring column hints to dlt** so the raw schema always exists after a pull — the
   even-further-upstream version of rule 2. It would interact with dlt's schema evolution and
   merge behavior, which padding deliberately does not touch. Revisit only if the combinator

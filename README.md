@@ -128,9 +128,13 @@ Details worth knowing:
 
 ### Full-text search
 
-Every pull also builds BM25 full-text indexes, so "has this been reported before?" is a ranked query rather than a scan. Indexed are `issues` and `pull_requests` (title and body), both comment tables (body), and the two thread tables (`thread_text`).
+Every pull also builds BM25 full-text indexes, so "has this been reported before?" is a ranked query rather than a scan. The six indexes cover three different corpora over the same entities — pick the index by the question you are asking, not just by the table name:
 
-Search a thread table to find related issues and pull requests; search a comment table to find individual comments. The comment indexes score each comment on its own, so a thread that circles a topic across several replies ranks below a single comment that says it all.
+| Indexes | One document per | Search it to answer |
+|---|---|---|
+| `fts_github_issues` / `fts_github_pull_requests` | issue or pull request — **title and body only** | "Is there an issue *about* this?" — the author's own description, without noise from whatever was later said in the comments |
+| `fts_github_issue_threads` / `fts_github_pull_request_threads` | issue or pull request — **title, body, and every comment** | "Has this been *discussed* anywhere?" — a mention deep in a long thread still matches |
+| `fts_github_conversation_comments` / `fts_github_review_comments` | **single comment** — its body | "Which comment said it?" — each comment is scored on its own, so a thread that circles a topic ranks below one comment that says it all |
 
 Each index lives in a schema named for its table — `fts_github_issues`, `fts_github_issue_threads` — and exposes `match_bm25(id, 'query')`:
 
@@ -141,7 +145,7 @@ ghtriage query "SELECT number, title, round(fts_github_issue_threads.match_bm25(
 Run `ghtriage schema` for the indexes your database actually holds, with their columns and document counts. Things worth knowing:
 
 - **The score function is keyed on the document id, not bound to its table.** Both derived views carry `id`, so one relation gives you search and derived facts together — the example above searches whole threads while selecting from `issue_activity`. Filter on both at once: `SELECT number, title FROM issue_activity WHERE fts_github_issues.match_bm25(id, 'windows path') IS NOT NULL AND state = 'open'`.
-- **Pairing a table with the wrong index returns nothing rather than an error.** An id the index does not hold simply scores `NULL`, so a search that comes back empty may be a wrong index name rather than an empty repository.
+- **A table and its thread table share ids — their indexes differ in text, not in entities.** `fts_github_issues.match_bm25(id, …)` and `fts_github_issue_threads.match_bm25(id, …)` accept the same ids and score the same issue against different corpora, so mixing them up is not an error — it answers the other question in the table above. An id an index does not hold (a pull request id against an issue index) scores `NULL`.
 - **Digits are not indexed.** The tokenizer strips them, so searching `404` finds nothing. Use `LIKE` or `regexp_matches` for exact codes, versions, and identifiers.
 - **Terms are OR-ed and stemmed by default.** `'azure credential'` matches documents containing either word, and `renaming` matches `rename`. Pass `conjunctive := 1` to require every term.
 - **Indexes are rebuilt from scratch on every pull.** On a repository with ~2,500 documents this adds about a third of a second to a pull and about 35% to the database file.
