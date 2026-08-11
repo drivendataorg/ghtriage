@@ -18,6 +18,7 @@ from ghtriage.full_text_search import INDEXES, create_search_indexes, index_sche
 #     2  'crash report'         term three times in the body -> outranks issue 1
 #     3  'quiet issue'          term appears only in a comment on it
 #     4  'no comments here'     nothing matches, and no comments at all
+#     5  'how to use the cache' vocabulary an English stopword list would eat
 #   pull_requests
 #     11 'fix segfault'         one conversation comment and one review comment
 #     12 'docs update'          nothing matches
@@ -63,6 +64,7 @@ def _populate(con: duckdb.DuckDBPyConnection) -> None:
             (1002, 2, "crash report", "segfault segfault segfault again", "i2"),
             (1003, 3, "quiet issue", "nothing to see here", "i3"),
             (1004, 4, "no comments here", "lonely body", "i4"),
+            (1005, 5, "how to use the cache", "you can use it anywhere", "i5"),
         ],
     )
     con.executemany(
@@ -192,6 +194,33 @@ def test_search_returns_no_rows_when_nothing_matches(db: Path) -> None:
     create_search_indexes(db)
 
     assert _search(db, "issues", "zzyzx") == []
+
+
+def test_common_words_are_searchable(db: Path) -> None:
+    """The default English stopword list is disabled. On software text, 'use' is
+    vocabulary, and a term filtered out at index time returns a confident empty
+    result -- indistinguishable from a repository that never discussed it. The stem
+    collision is the sharp edge: 'use' is eaten because its Porter stem 'us' is on
+    the list, so the damage cannot be read off the list itself."""
+    create_search_indexes(db)
+
+    assert [number for number, _ in _search(db, "issues", "use")] == [5]
+
+
+def test_conjunctive_search_survives_a_common_word(db: Path) -> None:
+    """`conjunctive := 1` requires every term; a stopword-filtered term can never
+    match, so one common word would empty the whole result set."""
+    create_search_indexes(db)
+
+    with duckdb.connect(str(db), read_only=True) as con:
+        results = con.execute(
+            "SELECT number FROM ("
+            "  SELECT number, fts_github_issues.match_bm25(id, 'use cache', conjunctive := 1)"
+            "    AS score FROM github.issues"
+            ") WHERE score IS NOT NULL"
+        ).fetchall()
+
+    assert [number for (number,) in results] == [5]
 
 
 # ---------------------------------------------------------------------------

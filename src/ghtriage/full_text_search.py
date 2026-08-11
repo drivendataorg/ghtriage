@@ -76,8 +76,14 @@ def _index_one(con: duckdb.DuckDBPyConnection, table: str, present: set[str]) ->
         # PRAGMA raise into the drop-and-warn below. Indexing the subset that happens to
         # exist would answer plausibly and wrongly by omission instead.
         quoted = ", ".join(f"'{column}'" for column in columns)
+        # stopwords='none': the default English list silently eats domain vocabulary on
+        # software text ('get', 'old' -- and 'use', whose Porter stem 'us' is on the
+        # list), turning a search into a confident empty answer and any conjunctive
+        # query containing one such word into zero rows. BM25's IDF weighting already
+        # down-ranks ubiquitous terms; commonness needs no list.
         con.execute(
-            f"PRAGMA create_fts_index('github.{table}', '{key_column}', {quoted}, overwrite=1)"
+            f"PRAGMA create_fts_index('github.{table}', '{key_column}', {quoted}, "
+            f"stopwords='none', overwrite=1)"
         )
     except Exception as exc:
         _drop_index(con, table)

@@ -158,11 +158,21 @@ derived facts" from a join into a plain `WHERE`. It leads the projection rather 
 because a key nobody can find is a key nobody uses. It is padded like any other optional column, so
 a database whose base table predates it still gets the full column set.
 
-**DuckDB's default tokenizer is kept, so digits are not searchable.**
-Rejected: `ignore='(\.|[^a-z0-9])+'`, which makes `404` findable but stops `python` matching
-`python3.11` — it tokenizes as `python3` + `11`. Neither setting is free. Exact codes and versions
-are what `LIKE` and `regexp_matches` already do well, and full-text search is a complement to the
-SQL filters rather than a replacement.
+**The default `ignore` pattern is kept (digits are not searchable); the stopword list is not
+(`stopwords='none'`).**
+Rejected, on digits: `ignore='(\.|[^a-z0-9])+'`, which makes `404` findable but stops `python`
+matching `python3.11` — it tokenizes as `python3` + `11`. Exact codes and versions are what `LIKE`
+and `regexp_matches` already do well, and full-text search is a complement to the SQL filters
+rather than a replacement.
+Rejected, on stopwords: the default 571-word English list, which on software text eats domain
+vocabulary — `get`, `old`, and, because filtering applies to *stemmed* tokens, every word whose
+Porter stem collides with the list (`use` → `us`) — so its damage cannot be enumerated by reading
+it. A filtered term returns a confident empty result, and one such word inside a
+`conjunctive := 1` query empties the whole result set. BM25's IDF weighting already down-ranks
+ubiquitous terms; the accepted cost is that match *counts* inflate for queries carrying very
+common words, which the README folds into "read the ranking, not the match count." A curated
+minimal list was also rejected: it would have to be curated in stem space, and it is a maintained
+judgment of the kind this project avoids (cf. the rejected agent-login list).
 
 **No `search` subcommand and no SQL macro wrapper.**
 Rejected: a `search_issues(q)` table macro. It works and composes with `WHERE`, but macros are

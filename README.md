@@ -66,7 +66,7 @@ ghtriage schema --table issue_activity
 ghtriage query "SELECT number, title, state FROM issues LIMIT 5"
 ghtriage query "SELECT count(*) AS n FROM issues" --format json
 ghtriage query "SELECT number, title FROM issue_activity WHERE state = 'open' AND first_non_author_comment_at IS NULL"
-ghtriage query "SELECT number, title, round(fts_github_issue_threads.match_bm25(id, 'cache invalidation'), 2) AS score FROM issue_activity WHERE score IS NOT NULL ORDER BY score DESC LIMIT 5"
+ghtriage query "SELECT number, title, score FROM (SELECT number, title, round(fts_github_issue_threads.match_bm25(id, 'cache invalidation'), 2) AS score FROM issue_activity) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 5"
 ```
 
 ### Exit codes
@@ -139,7 +139,7 @@ Every pull also builds BM25 full-text indexes, so "has this been reported before
 Each index lives in a schema named for its table — `fts_github_issues`, `fts_github_issue_threads` — and exposes `match_bm25(id, 'query')`:
 
 ```bash
-ghtriage query "SELECT number, title, round(fts_github_issue_threads.match_bm25(id, 'timeout uploading large files'), 2) AS score FROM issue_activity WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10"
+ghtriage query "SELECT number, title, score FROM (SELECT number, title, round(fts_github_issue_threads.match_bm25(id, 'timeout uploading large files'), 2) AS score FROM issue_activity) WHERE score IS NOT NULL ORDER BY score DESC LIMIT 10"
 ```
 
 Run `ghtriage schema` for the indexes your database actually holds, with their columns and document counts. Things worth knowing:
@@ -148,4 +148,6 @@ Run `ghtriage schema` for the indexes your database actually holds, with their c
 - **A table and its thread table share ids — their indexes differ in text, not in entities.** `fts_github_issues.match_bm25(id, …)` and `fts_github_issue_threads.match_bm25(id, …)` accept the same ids and score the same issue against different corpora, so mixing them up is not an error — it answers the other question in the table above. An id an index does not hold (a pull request id against an issue index) scores `NULL`.
 - **Digits are not indexed.** The tokenizer strips them, so searching `404` finds nothing. Use `LIKE` or `regexp_matches` for exact codes, versions, and identifiers.
 - **Terms are OR-ed and stemmed by default.** `'azure credential'` matches documents containing either word, and `renaming` matches `rename`. Pass `conjunctive := 1` to require every term.
-- **Indexes are rebuilt from scratch on every pull.** On a repository with ~2,500 documents this adds about a third of a second to a pull and about 35% to the database file.
+- **Every word is indexed — there is no stopword list.** On software text, `use`, `get`, and `old` are vocabulary, not noise, and BM25's frequency weighting already keeps ubiquitous words from dominating a ranking. The flip side: a query containing a very common word matches nearly every document, so read the ranking, not the match count.
+- **Scores rank results within a single query; they are not a similarity measure.** A score's scale depends on the corpus and the query's terms, so scores are not comparable across queries or across indexes. Take the top `n` with `ORDER BY score DESC`; don't filter on a fixed threshold.
+- **Indexes are rebuilt from scratch on every pull.** On a repository with ~2,500 documents this adds about half a second to a pull and roughly 40% to the database file.
