@@ -32,11 +32,7 @@ def execute_query(sql: str, cwd: str | Path | None = None) -> tuple[list[str], l
         return columns, rows
 
 
-def get_tables(
-    cwd: str | Path | None = None,
-    *,
-    include_internal: bool = False,
-) -> list[str]:
+def get_tables(cwd: str | Path | None = None) -> list[str]:
     db_path = _resolve_db_path(cwd=cwd)
     with duckdb.connect(str(db_path), read_only=True) as conn:
         rows = conn.execute(
@@ -48,10 +44,7 @@ def get_tables(
             """
         ).fetchall()
 
-    tables = [row[0] for row in rows]
-    if include_internal:
-        return tables
-    return [table for table in tables if not table.startswith("_dlt_")]
+    return [row[0] for row in rows if not row[0].startswith("_dlt_")]
 
 
 def get_table_columns(
@@ -78,9 +71,13 @@ def get_table_columns(
     if not rows:
         raise ValueError(f"Table not found in github schema: {table_name}")
 
+    # The loader's row links are how the normalizer builds child tables, not part of the
+    # documented surface; the propagated GitHub keys are the join. Still selectable by
+    # name, and `information_schema` through `ghtriage query` remains the ground truth.
     return [
         (name, data_type, is_nullable == "YES", comment)
         for name, data_type, is_nullable, comment in rows
+        if not name.startswith("_dlt_")
     ]
 
 
