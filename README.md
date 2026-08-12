@@ -92,7 +92,7 @@ The directory manages its own `.gitignore` so that only `config.toml` can be com
 Some behaviors to be aware of:
 
 - **The database is a snapshot.** It reflects GitHub as of the last `pull` and never updates on its own. Use `status` to see what repository is in the database and how fresh the data is.
-- **Pulls are incremental.** Re-running `pull` fetches only what changed since the last pull, so it is cheap to run often. Use `--full` to delete the database and rebuild from scratch. After upgrading to a ghtriage version that changes the database layout, `pull` refuses once and asks for `--full`.
+- **Pulls are incremental.** Re-running `pull` fetches only what changed since the last pull, so it is cheap to run often. Use `--full` to delete the database and rebuild from scratch. After upgrading to a ghtriage version that changes the database layout, `pull` refuses and asks for a one-time `--full`.
 - **The target repository is resolved automatically.** In order of precedence: the `--repo` flag, the default set in `.ghtriage/config.toml`, then the current repository's git `origin` remote.
 
 ### What gets pulled
