@@ -11,6 +11,7 @@ from ghtriage.annotations import (
     _extract_descriptions,
     _resolve_ref,
     annotate_database,
+    annotate_propagated_keys,
     build_column_descriptions,
     build_table_descriptions,
     fetch_and_annotate,
@@ -363,3 +364,66 @@ def test_fetch_and_annotate_propagates_errors(annotated_db: Path) -> None:
         pytest.raises(RuntimeError, match="network error"),
     ):
         fetch_and_annotate(annotated_db)
+
+
+# ---------------------------------------------------------------------------
+# annotate_propagated_keys
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def child_table_db(tmp_path: Path) -> Path:
+    """A database holding the child tables dlt propagates parent keys into."""
+    db_path = tmp_path / "children.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE SCHEMA github")
+        conn.execute("CREATE TABLE github.issues (id BIGINT, number BIGINT)")
+        conn.execute("CREATE TABLE github.issues__labels (issue_number BIGINT, name VARCHAR)")
+        conn.execute(
+            "CREATE TABLE github.issues__performed_via_github_app__events "
+            "(issue_number BIGINT, name VARCHAR)"
+        )
+        conn.execute(
+            "CREATE TABLE github.pull_requests__labels (pull_request_number BIGINT, name VARCHAR)"
+        )
+        conn.execute(
+            "CREATE TABLE github.conversation_comments__reactions "
+            "(comment_id BIGINT, content VARCHAR)"
+        )
+    return db_path
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "join_target"),
+    [
+        ("issues__labels", "issue_number", "issues.number"),
+        ("issues__performed_via_github_app__events", "issue_number", "issues.number"),
+        ("pull_requests__labels", "pull_request_number", "pull_requests.number"),
+        ("conversation_comments__reactions", "comment_id", "conversation_comments.id"),
+    ],
+)
+def test_annotate_propagated_keys_documents_the_join(
+    child_table_db: Path, table: str, column: str, join_target: str
+) -> None:
+    """These columns exist to be the documented join, so `schema` has to explain them."""
+    annotate_propagated_keys(child_table_db)
+
+    with duckdb.connect(str(child_table_db)) as conn:
+        row = conn.execute(
+            "SELECT comment FROM duckdb_columns() WHERE schema_name = 'github' "
+            "AND table_name = ? AND column_name = ?",
+            [table, column],
+        ).fetchone()
+
+    assert row[0] is not None and join_target in row[0]
+
+
+def test_annotate_propagated_keys_skips_absent_tables_and_columns(tmp_path: Path) -> None:
+    """A young or sparse repository has few of these tables, and dlt only adds a column
+    once a record carrying it arrives -- the same contract as `annotate_database`."""
+    db_path = tmp_path / "sparse.duckdb"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE SCHEMA github")
+        conn.execute("CREATE TABLE github.issues__labels (name VARCHAR)")
+
+    annotate_propagated_keys(db_path)  # should not raise

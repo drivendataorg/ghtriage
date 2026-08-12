@@ -8,7 +8,7 @@ from dlt.common.normalizers.json.relational import DataItemNormalizer
 from dlt.sources.rest_api import rest_api_source
 import duckdb
 
-from ghtriage.annotations import fetch_and_annotate
+from ghtriage.annotations import annotate_propagated_keys, fetch_and_annotate
 from ghtriage.config import get_db_path, get_pipelines_dir
 from ghtriage.derived import create_derived
 from ghtriage.full_text_search import create_search_indexes
@@ -249,5 +249,10 @@ def run_pull(
         fetch_and_annotate(db_path)
     except Exception as exc:
         warnings.append(f"schema annotation failed: {exc}")
+
+    try:
+        annotate_propagated_keys(db_path)
+    except Exception as exc:
+        warnings.append(f"join key documentation failed: {exc}")
 
     return load_info, warnings

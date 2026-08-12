@@ -61,6 +61,10 @@ def _install_pipeline_mocks(monkeypatch):
     monkeypatch.setattr("ghtriage.pipeline.create_search_indexes", mock_create_search_indexes)
     mock_fetch_and_annotate = Mock(side_effect=records("fetch_and_annotate"))
     monkeypatch.setattr("ghtriage.pipeline.fetch_and_annotate", mock_fetch_and_annotate)
+    monkeypatch.setattr(
+        "ghtriage.pipeline.annotate_propagated_keys",
+        Mock(side_effect=records("annotate_propagated_keys")),
+    )
 
     return (
         sentinel_destination,
@@ -412,7 +416,12 @@ def test_run_pull_creates_derived_before_annotating(tmp_path: Path, monkeypatch)
 
     db_path = tmp_path / ".ghtriage" / "ghtriage.duckdb"
     mock_create_derived.assert_called_once_with(db_path)
-    assert call_order == ["create_derived", "create_search_indexes", "fetch_and_annotate"]
+    assert call_order == [
+        "create_derived",
+        "create_search_indexes",
+        "fetch_and_annotate",
+        "annotate_propagated_keys",
+    ]
 
 
 def test_run_pull_creates_derived_on_full_rebuild(tmp_path: Path, monkeypatch) -> None:
@@ -435,7 +444,12 @@ def test_run_pull_creates_derived_on_full_rebuild(tmp_path: Path, monkeypatch) -
     run_pull(repo="owner/repo", token="t", full=True)
 
     mock_create_derived.assert_called_once()
-    assert call_order == ["create_derived", "create_search_indexes", "fetch_and_annotate"]
+    assert call_order == [
+        "create_derived",
+        "create_search_indexes",
+        "fetch_and_annotate",
+        "annotate_propagated_keys",
+    ]
 
 
 def test_run_pull_builds_search_indexes_between_derived_and_annotation(
@@ -461,7 +475,12 @@ def test_run_pull_builds_search_indexes_between_derived_and_annotation(
 
     db_path = tmp_path / ".ghtriage" / "ghtriage.duckdb"
     mock_create_search_indexes.assert_called_once_with(db_path)
-    assert call_order == ["create_derived", "create_search_indexes", "fetch_and_annotate"]
+    assert call_order == [
+        "create_derived",
+        "create_search_indexes",
+        "fetch_and_annotate",
+        "annotate_propagated_keys",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +498,7 @@ def test_run_pull_builds_search_indexes_between_derived_and_annotation(
         ("ghtriage.pipeline.create_derived", "derived objects failed"),
         ("ghtriage.pipeline.create_search_indexes", "full-text indexes failed"),
         ("ghtriage.pipeline.fetch_and_annotate", "schema annotation failed"),
+        ("ghtriage.pipeline.annotate_propagated_keys", "join key documentation failed"),
     ],
 )
 def test_run_pull_survives_and_reports_a_failed_step(
