@@ -57,9 +57,10 @@ def annotate_propagated_keys(db_path: Path) -> None:
         ).fetchall()
 
         for parent, (column, desc) in PROPAGATED_KEY_DESCRIPTIONS.items():
+            escaped = desc.replace("'", "''")
             for table, existing_column in existing:
                 if existing_column == column and table.startswith(f"{parent}__"):
-                    conn.execute(f"COMMENT ON COLUMN github.{table}.{column} IS '{desc}'")
+                    conn.execute(f"COMMENT ON COLUMN github.{table}.{column} IS '{escaped}'")
 
 
 def fetch_spec(url: str, timeout_seconds: int = OPENAPI_FETCH_TIMEOUT_SECONDS) -> dict:
