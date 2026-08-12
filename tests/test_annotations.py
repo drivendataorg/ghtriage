@@ -8,6 +8,7 @@ import pytest
 
 from ghtriage.annotations import (
     OPENAPI_FETCH_TIMEOUT_SECONDS,
+    PROPAGATED_KEY_DESCRIPTIONS,
     _extract_descriptions,
     _resolve_ref,
     annotate_database,
@@ -17,6 +18,7 @@ from ghtriage.annotations import (
     fetch_and_annotate,
     fetch_spec,
 )
+from ghtriage.pipeline import KEY_PROPAGATION
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -427,3 +429,13 @@ def test_annotate_propagated_keys_skips_absent_tables_and_columns(tmp_path: Path
         conn.execute("CREATE TABLE github.issues__labels (name VARCHAR)")
 
     annotate_propagated_keys(db_path)  # should not raise
+
+
+def test_every_propagated_key_has_exactly_one_description() -> None:
+    """The propagation config and the description dict declare the same parent->column
+    pairs in two modules, and only their agreement makes every propagated key a
+    documented one -- the silent-skip contract means a missing entry ships an
+    undocumented column with no warning."""
+    propagated = {parent: set(mapping.values()) for parent, mapping in KEY_PROPAGATION.items()}
+    described = {parent: {column} for parent, (column, _) in PROPAGATED_KEY_DESCRIPTIONS.items()}
+    assert propagated == described
