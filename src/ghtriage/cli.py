@@ -6,7 +6,7 @@ import sys
 from typing import Sequence
 
 from ghtriage.config import get_db_path, resolve_repo, resolve_token
-from ghtriage.pipeline import run_pull
+from ghtriage.pipeline import SchemaGenerationMismatch, run_pull
 from ghtriage.query import (
     FullTextIndex,
     execute_query,
@@ -59,7 +59,11 @@ def _run_pull(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    load_info, warnings = run_pull(repo=repo, token=token, full=args.full)
+    try:
+        load_info, warnings = run_pull(repo=repo, token=token, full=args.full)
+    except SchemaGenerationMismatch as exc:
+        print(exc, file=sys.stderr)
+        return 1
     print(f"Pull completed for {repo}")
     print(load_info)
     for warning in warnings:

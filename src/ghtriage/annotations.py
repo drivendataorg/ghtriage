@@ -17,6 +17,52 @@ TABLE_SCHEMAS = {
 }
 
 
+# Maps parent table → (propagated key column, description). dlt puts the column on every
+# child table under that parent (see KEY_PROPAGATION in pipeline.py), including ones it
+# creates later, so the description is applied by parent rather than listed per table.
+# These columns are ghtriage's own addition and are absent from GitHub's OpenAPI
+# schemas, which is why their text is written here rather than fetched.
+PROPAGATED_KEY_DESCRIPTIONS = {
+    "issues": (
+        "issue_number",
+        "Propagated from the parent issue; join to `issues.number`.",
+    ),
+    "pull_requests": (
+        "pull_request_number",
+        "Propagated from the parent pull request; join to `pull_requests.number`.",
+    ),
+    "conversation_comments": (
+        "comment_id",
+        "Propagated from the parent comment; join to `conversation_comments.id`.",
+    ),
+    "review_comments": (
+        "review_comment_id",
+        "Propagated from the parent review comment; join to `review_comments.id`.",
+    ),
+}
+
+
+def annotate_propagated_keys(db_path: Path) -> None:
+    """
+    Apply COMMENT ON COLUMN to the GitHub keys child tables carry from their parent.
+
+    Deliberately not part of fetch_and_annotate: these descriptions are written here, so
+    they have no reason to depend on a network fetch succeeding.
+    Tables or columns absent from the database are silently skipped.
+    """
+    with duckdb.connect(str(db_path)) as conn:
+        existing = conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'github'"
+        ).fetchall()
+
+        for parent, (column, desc) in PROPAGATED_KEY_DESCRIPTIONS.items():
+            escaped = desc.replace("'", "''")
+            for table, existing_column in existing:
+                if existing_column == column and table.startswith(f"{parent}__"):
+                    conn.execute(f"COMMENT ON COLUMN github.{table}.{column} IS '{escaped}'")
+
+
 def fetch_spec(url: str, timeout_seconds: int = OPENAPI_FETCH_TIMEOUT_SECONDS) -> dict:
     """Download and parse an OpenAPI spec from a URL."""
     try:
