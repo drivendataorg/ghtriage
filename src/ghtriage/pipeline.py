@@ -27,9 +27,11 @@ KEY_PROPAGATION = {
 }
 
 # Bump when a change alters the shape of the raw tables an existing database already
-# holds (propagation config, resources, primary keys, table renames). Derived views and
-# full-text indexes never require a bump: they are rebuilt from scratch on every pull
-# and cannot go stale.
+# holds (propagation config, resources, primary keys, table renames), and when a
+# derived object or full-text index is renamed or removed -- nothing drops an object
+# that has left its declaration, so existing databases would keep the orphan, frozen at
+# its last build. Edits to declared objects never require a bump: they are rebuilt from
+# scratch on every pull and cannot go stale in place.
 SCHEMA_GENERATION = 1
 
 
