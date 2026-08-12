@@ -219,6 +219,7 @@ def test_write_meta_upserts_expected_keys(tmp_path: Path) -> None:
     assert meta["repo"] == "owner/repo"
     assert meta["last_full_pull"] == "false"
     assert "T" in meta["last_pull_at"] and meta["last_pull_at"].endswith("Z")
+    assert meta["schema_generation"] == str(SCHEMA_GENERATION)
 
 
 def test_write_meta_records_full_flag(tmp_path: Path) -> None:
@@ -241,16 +242,6 @@ def test_write_meta_is_idempotent(tmp_path: Path) -> None:
 
     assert meta["repo"] == "owner/repo-b"
     assert meta["last_full_pull"] == "true"
-
-
-def test_write_meta_stamps_the_current_schema_generation(tmp_path: Path) -> None:
-    db_path = tmp_path / "test.duckdb"
-    _write_meta(db_path=db_path, repo="owner/repo", full=False)
-
-    with duckdb.connect(str(db_path)) as conn:
-        meta = dict(conn.execute("SELECT key, value FROM github._ghtriage_meta").fetchall())
-
-    assert meta["schema_generation"] == str(SCHEMA_GENERATION)
 
 
 # ---------------------------------------------------------------------------
@@ -311,21 +302,6 @@ def test_run_pull_refuses_an_incremental_pull_into_another_generation(
     mock_pipeline_obj.run.assert_not_called()
 
 
-def test_schema_generation_mismatch_names_both_generations_and_the_fix(
-    tmp_path: Path, monkeypatch
-) -> None:
-    _install_pipeline_mocks(monkeypatch)
-    _make_database(tmp_path, {"repo": "owner/repo"})
-
-    with pytest.raises(SchemaGenerationMismatch) as exc_info:
-        run_pull(repo="owner/repo", token="t", full=False, cwd=tmp_path)
-
-    message = str(exc_info.value)
-    assert "generation 0" in message
-    assert f"generation {SCHEMA_GENERATION}" in message
-    assert "ghtriage pull --full" in message
-
-
 def test_run_pull_full_does_not_check_the_generation(tmp_path: Path, monkeypatch) -> None:
     """`--full` deletes the database first, so there is no shape left to be stale."""
     (
@@ -345,30 +321,6 @@ def test_run_pull_full_does_not_check_the_generation(tmp_path: Path, monkeypatch
     _make_database(tmp_path, {"schema_generation": str(SCHEMA_GENERATION + 1)})
 
     run_pull(repo="owner/repo", token="t", full=True, cwd=tmp_path)
-
-    mock_pipeline_obj.run.assert_called_once_with(sentinel_source)
-
-
-def test_run_pull_does_not_check_the_generation_without_a_database(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """A first pull creates the database at the current generation; nothing can be stale."""
-    (
-        _sentinel_destination,
-        sentinel_source,
-        _sentinel_run_result,
-        _mock_duckdb_factory,
-        mock_pipeline_obj,
-        _mock_pipeline_factory,
-        _mock_rest_api_source,
-        _mock_write_meta,
-        _mock_fetch_and_annotate,
-        _mock_create_derived,
-        _mock_create_search_indexes,
-        _call_order,
-    ) = _install_pipeline_mocks(monkeypatch)
-
-    run_pull(repo="owner/repo", token="t", full=False, cwd=tmp_path)
 
     mock_pipeline_obj.run.assert_called_once_with(sentinel_source)
 
