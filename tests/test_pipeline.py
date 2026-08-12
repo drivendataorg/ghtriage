@@ -1,11 +1,15 @@
 from pathlib import Path
 from unittest.mock import Mock
 
+import dlt
+from dlt.common.normalizers.json.relational import DataItemNormalizer
+from dlt.common.schema import Schema
 import duckdb
 import pytest
 
 from ghtriage.full_text_search import INDEXES
 from ghtriage.pipeline import (
+    KEY_PROPAGATION,
     SCHEMA_GENERATION,
     SchemaGenerationMismatch,
     _write_meta,
@@ -14,9 +18,18 @@ from ghtriage.pipeline import (
 )
 
 
+def _stub_source():
+    """A stand-in for the constructed source, carrying a real schema.
+
+    `build_rest_api_source` writes the key-propagation config onto the source's schema,
+    so the stand-in needs one that config can be validated against.
+    """
+    return Mock(schema=Schema("ghtriage"))
+
+
 def _install_pipeline_mocks(monkeypatch):
     sentinel_destination = object()
-    sentinel_source = object()
+    sentinel_source = _stub_source()
     sentinel_run_result = object()
 
     mock_duckdb_factory = Mock(return_value=sentinel_destination)
@@ -517,9 +530,12 @@ def test_every_indexed_resource_merges_on_id(monkeypatch) -> None:
     guarantee, so this is the layer that gets the test.
     """
     captured: dict = {}
-    monkeypatch.setattr(
-        "ghtriage.pipeline.rest_api_source", lambda config: captured.update(config)
-    )
+
+    def capture(config):
+        captured.update(config)
+        return _stub_source()
+
+    monkeypatch.setattr("ghtriage.pipeline.rest_api_source", capture)
 
     build_rest_api_source(repo="owner/repo", token="t")
 
@@ -533,3 +549,99 @@ def test_every_indexed_resource_merges_on_id(monkeypatch) -> None:
     # Every raw table an index keys on `id` is one of these resources.
     declared = {name for name in INDEXES if not name.endswith("_threads")}
     assert declared == {resource["name"] for resource in captured["resources"]}
+
+
+# ---------------------------------------------------------------------------
+# The GitHub join keys child tables carry
+# ---------------------------------------------------------------------------
+
+
+def test_source_schema_declares_key_propagation() -> None:
+    """The documented child-table join is a normalizer setting, not something the
+    resources produce, so the declaration is where it gets pinned."""
+    source = build_rest_api_source(repo="owner/repo", token="t")
+
+    json_config = source.schema.to_dict()["normalizers"]["json"]["config"]
+    assert json_config["propagation"]["tables"] == KEY_PROPAGATION
+
+
+def _run_fixture_pipeline(tmp_path: Path, records: list[dict]) -> Path:
+    """Load fixture records through a real dlt pipeline with the propagation config.
+
+    Hermetic: dicts in, DuckDB out, no HTTP. The child tables only exist because the
+    normalizer makes them, so this is the only way to see what it puts in them.
+    """
+
+    @dlt.source(name="fixtures")
+    def fixture_source():
+        @dlt.resource(name="issues", primary_key="id", write_disposition="merge")
+        def issues():
+            yield from records
+
+        return issues
+
+    # The config the real source carries, so this exercises the wiring and not just dlt.
+    built = build_rest_api_source(repo="owner/repo", token="t")
+    source = fixture_source()
+    DataItemNormalizer.update_normalizer_config(
+        source.schema, built.schema.to_dict()["normalizers"]["json"].get("config", {})
+    )
+
+    db_path = tmp_path / "fixtures.duckdb"
+    pipeline = dlt.pipeline(
+        pipeline_name="ghtriage_fixtures",
+        destination=dlt.destinations.duckdb(str(db_path)),
+        dataset_name="github",
+        pipelines_dir=str(tmp_path / "pipelines"),
+    )
+    pipeline.run(source)
+    return db_path
+
+
+def _fixture_records(number_for_id_1: int = 101) -> list[dict]:
+    """Two issues, each with a child array and an object holding a grandchild array."""
+    return [
+        {
+            "id": 1,
+            "number": number_for_id_1,
+            "labels": [{"name": "bug"}, {"name": "docs"}],
+            "performed_via_github_app": {"events": [{"name": "push"}]},
+        },
+        {
+            "id": 2,
+            "number": 202,
+            "labels": [{"name": "wontfix"}],
+            "performed_via_github_app": {"events": [{"name": "issues"}]},
+        },
+    ]
+
+
+def test_child_and_grandchild_rows_carry_the_parent_key(tmp_path: Path) -> None:
+    db_path = _run_fixture_pipeline(tmp_path, _fixture_records())
+
+    with duckdb.connect(str(db_path)) as conn:
+        labels = conn.execute(
+            "SELECT issue_number, name FROM github.issues__labels ORDER BY issue_number, name"
+        ).fetchall()
+        events = conn.execute(
+            "SELECT issue_number, name FROM "
+            "github.issues__performed_via_github_app__events ORDER BY issue_number"
+        ).fetchall()
+
+    assert labels == [(101, "bug"), (101, "docs"), (202, "wontfix")]
+    assert events == [(101, "push"), (202, "issues")]
+
+
+def test_merging_an_edited_parent_leaves_no_stale_child_keys(tmp_path: Path) -> None:
+    """A merge deletes and re-inserts a root's children, so the propagated value
+    follows an edit rather than sticking. Pinned because a dlt upgrade could break it
+    silently: the stale rows would still join, to the wrong parent."""
+    _run_fixture_pipeline(tmp_path, _fixture_records())
+    db_path = _run_fixture_pipeline(tmp_path, _fixture_records(number_for_id_1=999))
+
+    with duckdb.connect(str(db_path)) as conn:
+        labels = conn.execute(
+            "SELECT issue_number, name FROM github.issues__labels ORDER BY issue_number, name"
+        ).fetchall()
+
+    assert labels == [(202, "wontfix"), (999, "bug"), (999, "docs")]

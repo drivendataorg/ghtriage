@@ -4,6 +4,7 @@ import shutil
 from typing import Any
 
 import dlt
+from dlt.common.normalizers.json.relational import DataItemNormalizer
 from dlt.sources.rest_api import rest_api_source
 import duckdb
 
@@ -11,6 +12,19 @@ from ghtriage.annotations import fetch_and_annotate
 from ghtriage.config import get_db_path, get_pipelines_dir
 from ghtriage.derived import create_derived
 from ghtriage.full_text_search import create_search_indexes
+
+# The GitHub key each child table carries from its parent, so `issues__labels` joins on
+# `issue_number` rather than on the loader's own row link. dlt applies this recursively,
+# so any child table it creates under these parents gets the key too. Comments have no
+# number, so `id` is their key. `review_comments` has no arrays and so propagates
+# nothing today; it is listed so that a child table dlt creates there later is not the
+# one without a key.
+KEY_PROPAGATION = {
+    "issues": {"number": "issue_number"},
+    "pull_requests": {"number": "pull_request_number"},
+    "conversation_comments": {"id": "comment_id"},
+    "review_comments": {"id": "review_comment_id"},
+}
 
 # Bump when a change alters the shape of the raw tables an existing database already
 # holds (propagation config, resources, primary keys, table renames). Derived views and
@@ -123,7 +137,12 @@ def build_rest_api_source(repo: str, token: str):
             },
         ],
     }
-    return rest_api_source(source_config)
+    source = rest_api_source(source_config)
+    # Copied because dlt normalizes the identifiers in place.
+    DataItemNormalizer.update_normalizer_config(
+        source.schema, {"propagation": {"tables": dict(KEY_PROPAGATION)}}
+    )
+    return source
 
 
 def _write_meta(db_path: Path, repo: str, full: bool) -> None:
