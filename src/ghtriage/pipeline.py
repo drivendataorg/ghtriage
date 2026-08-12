@@ -38,8 +38,8 @@ class SchemaGenerationMismatch(RuntimeError):
 
     def __init__(self, stored: int, current: int) -> None:
         super().__init__(
-            "This database was created by a ghtriage version with a different schema "
-            f"(generation {stored}; this version writes generation {current}).\n"
+            f"This database reads as schema generation {stored}, but this version of "
+            f"ghtriage writes generation {current}.\n"
             "Run `ghtriage pull --full` to rebuild it."
         )
 
