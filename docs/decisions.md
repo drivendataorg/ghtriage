@@ -221,6 +221,10 @@ Rejected: an `--internal` escape hatch on `schema`, and with it the `include_int
 `get_tables()` had carried unused since #3. `information_schema` through `ghtriage query` is the
 ground truth the command summarizes, so a display flag is surface without a user; adding one
 takes five minutes if a user ever appears.
+Rejected: switching the derived views' internal joins to the propagated key. `derived.py` still
+joins children on `_dlt_parent_id = _dlt_id`, deliberately: the normalizer guarantees that link
+independent of the propagation config, so the views cannot be broken by a change to it. The
+propagated key is the documented surface; the views are plumbing and may join on plumbing.
 
 ### Generation stamp, not migrations
 
