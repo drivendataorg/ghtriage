@@ -523,6 +523,43 @@ def test_every_indexed_resource_merges_on_id(monkeypatch) -> None:
     assert declared == {resource["name"] for resource in captured["resources"]}
 
 
+def test_schema_generation_1_pins_the_raw_table_shape(monkeypatch) -> None:
+    """Nothing else fails when the raw-table shape changes without a generation bump --
+    the suite stays green and the stamp silently stops refusing the databases it
+    exists to refuse. This is a literal copy of the shape generation 1 writes.
+
+    If this test fails, you changed that shape: bump SCHEMA_GENERATION and update
+    the copy here in the same change.
+    """
+    assert SCHEMA_GENERATION == 1
+
+    assert KEY_PROPAGATION == {
+        "issues": {"number": "issue_number"},
+        "pull_requests": {"number": "pull_request_number"},
+        "conversation_comments": {"id": "comment_id"},
+        "review_comments": {"id": "review_comment_id"},
+    }
+
+    captured: dict = {}
+
+    def capture(config):
+        captured.update(config)
+        return _stub_source()
+
+    monkeypatch.setattr("ghtriage.pipeline.rest_api_source", capture)
+
+    build_rest_api_source(repo="owner/repo", token="t")
+
+    assert captured["resource_defaults"]["primary_key"] == "id"
+    assert captured["resource_defaults"]["write_disposition"] == "merge"
+    assert [resource["name"] for resource in captured["resources"]] == [
+        "issues",
+        "pull_requests",
+        "conversation_comments",
+        "review_comments",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # The GitHub join keys child tables carry
 # ---------------------------------------------------------------------------
