@@ -104,7 +104,7 @@ Some behaviors to be aware of:
 | `conversation_comments` | Comments on the main thread of the issue or pull request. |
 | `review_comments` | Inline comments on a pull request's diff. |
 
-Nested arrays become child tables named with a double-underscore, e.g., `issues__labels`, and can be joined to their parent on `_dlt_parent_id = _dlt_id`.
+Nested arrays become child tables named with a double-underscore, e.g., `issues__labels`, and carry their parent's GitHub key: join `issues__labels.issue_number = issues.number`. Child tables of `pull_requests` carry `pull_request_number`; child tables of the two comment tables carry `comment_id` and `review_comment_id`, joining to the parent's `id`. Run `ghtriage schema --table <name>` to see which key a child table carries.
 
 If any entity has zero records, no table is created rather than an empty one. Run `ghtriage schema` for the authoritative list of what your
 database actually holds.

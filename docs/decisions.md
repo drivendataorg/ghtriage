@@ -195,3 +195,47 @@ corpora — so crossing them is a corpus choice to make deliberately, not an ano
 earlier "wrong index returns nothing" diagnostic was factually false for exactly these pairs
 (every id hits) and taught the false contrapositive that a non-empty result proves the right
 index. The README documents which corpus answers which question.
+
+### Propagated join keys
+
+**Child tables carry their parent's GitHub key — `issues__labels.issue_number` joins to
+`issues.number` — and that is the documented join; the `_dlt_*` columns stay in the database
+as plumbing and are hidden from `ghtriage schema`.** (2026-08-12,
+[#15](https://github.com/jayqi/ghtriage/issues/15))
+Rejected: documenting `_dlt_parent_id = _dlt_id` as the child-table join. It publishes loader
+bookkeeping as API — the same objection that made GitHub's `id` the full-text document key (see
+[Full-text document key](#full-text-document-key)) — and a reader who joins on it learns nothing
+about the entity. dlt's normalizer propagates the parent's own key into every child table,
+including ones it creates later, so the public join costs a config block rather than per-table
+work.
+Rejected: a derived view per child table exposing the key. That fixes presentation while the raw
+tables a query actually reaches still lack the column, and it adds an object per array.
+Rejected: propagating `id` alongside `number`. The database is single-repo by construction
+(`_ghtriage_meta` holds one repo) and `number` is the handle everywhere else — the derived views,
+the README examples, how people refer to issues — with `id` still one join away. Comments have no
+number, so `id` is the propagated key there.
+Rejected: keeping `_dlt_list_idx` visible. Hiding it is a real loss and taken deliberately: it is
+the only record of GitHub's original array order, but nothing depends on that order, the views
+sort by name, and label or assignee order carries no meaning on GitHub.
+Rejected: an `--internal` escape hatch on `schema`, and with it the `include_internal` parameter
+`get_tables()` had carried unused since #3. `information_schema` through `ghtriage query` is the
+ground truth the command summarizes, so a display flag is surface without a user; adding one
+takes five minutes if a user ever appears.
+
+### Generation stamp, not migrations
+
+**A single integer stamped into `_ghtriage_meta` is compared before every incremental pull; any
+mismatch refuses the pull, before the load, and points at `ghtriage pull --full`.** (2026-08-12,
+[#15](https://github.com/jayqi/ghtriage/issues/15))
+Rejected: backfilling the propagated columns with an `UPDATE` from the `_dlt_` link. It works
+once, and then every future shape change needs its own backfill; the database is a disposable
+cache that `pull --full` rebuilds in minutes, so the state is worth making unreachable rather
+than repairable. Without the check, an incremental pull populates the new columns only for
+children of recently-touched parents, and the newly documented join silently drops every label
+row belonging to an untouched issue.
+Rejected: comparing the package version. It bumps on every release, so every release would demand
+a rebuild, and it is unreliable under editable installs where the version does not move at all.
+Rejected: warning after the pull. The mixed database already exists by then, and the warning
+scrolls past while the wrong joins happen later and quietly.
+Rejected: auto-escalating a mismatch to a full pull. It silently deletes the database and spends
+minutes and API quota the user did not ask for.
