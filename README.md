@@ -92,7 +92,7 @@ The directory manages its own `.gitignore` so that only `config.toml` can be com
 Some behaviors to be aware of:
 
 - **The database is a snapshot.** It reflects GitHub as of the last `pull` and never updates on its own. Use `status` to see what repository is in the database and how fresh the data is.
-- **Pulls are incremental.** Re-running `pull` fetches only what changed since the last pull, so it is cheap to run often. Use `--full` to delete the database and rebuild from scratch.
+- **Pulls are incremental.** Re-running `pull` fetches only what changed since the last pull, so it is cheap to run often. Use `--full` to delete the database and rebuild from scratch. After upgrading to a ghtriage version that changes the database layout, `pull` refuses and asks for a one-time `--full`.
 - **The target repository is resolved automatically.** In order of precedence: the `--repo` flag, the default set in `.ghtriage/config.toml`, then the current repository's git `origin` remote.
 
 ### What gets pulled
@@ -104,7 +104,7 @@ Some behaviors to be aware of:
 | `conversation_comments` | Comments on the main thread of the issue or pull request. |
 | `review_comments` | Inline comments on a pull request's diff. |
 
-Nested arrays become child tables named with a double-underscore, e.g., `issues__labels`, and can be joined to their parent on `_dlt_parent_id = _dlt_id`.
+Nested arrays become child tables named with a double-underscore, e.g., `issues__labels`, and each carries its parent's GitHub key — join `issues__labels.issue_number = issues.number`. Run `ghtriage schema --table <name>` to see the key any child table carries and what it joins to.
 
 If any entity has zero records, no table is created rather than an empty one. Run `ghtriage schema` for the authoritative list of what your
 database actually holds.

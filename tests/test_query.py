@@ -23,10 +23,14 @@ def sample_cwd(tmp_path: Path) -> Path:
 
     con = duckdb.connect(str(db_path))
     con.execute("CREATE SCHEMA github")
-    con.execute("CREATE TABLE github.issues (id BIGINT, title VARCHAR)")
-    con.execute("INSERT INTO github.issues VALUES (1, 'A'), (2, 'B')")
+    con.execute("CREATE TABLE github.issues (id BIGINT, title VARCHAR, _dlt_id VARCHAR)")
+    con.execute("INSERT INTO github.issues VALUES (1, 'A', 'x'), (2, 'B', 'y')")
     con.execute("CREATE TABLE github._dlt_loads (load_id VARCHAR)")
-    con.execute("CREATE TABLE github.issues__labels (issue_id BIGINT, name VARCHAR)")
+    con.execute(
+        "CREATE TABLE github.issues__labels ("
+        "issue_number BIGINT, name VARCHAR, "
+        "_dlt_parent_id VARCHAR, _dlt_list_idx BIGINT, _dlt_id VARCHAR)"
+    )
     con.close()
 
     return tmp_path
@@ -80,11 +84,15 @@ def test_get_tables_hides_internal_by_default(sample_cwd: Path) -> None:
     assert get_tables(cwd=sample_cwd) == ["issues", "issues__labels"]
 
 
-def test_get_tables_can_include_internal(sample_cwd: Path) -> None:
-    assert get_tables(cwd=sample_cwd, include_internal=True) == [
-        "_dlt_loads",
-        "issues",
-        "issues__labels",
+def test_get_table_columns_hides_internal_columns(sample_cwd: Path) -> None:
+    """Loader bookkeeping is not the documented surface: `issue_number` is the join.
+
+    `_dlt_list_idx` goes with the rest, so GitHub's array order stops being visible --
+    nothing depends on it, and label order carries no meaning on GitHub.
+    """
+    assert [name for name, _, _, _ in get_table_columns("issues__labels", cwd=sample_cwd)] == [
+        "issue_number",
+        "name",
     ]
 
 

@@ -4,13 +4,46 @@ import shutil
 from typing import Any
 
 import dlt
+from dlt.common.normalizers.json.relational import DataItemNormalizer
 from dlt.sources.rest_api import rest_api_source
 import duckdb
 
-from ghtriage.annotations import fetch_and_annotate
+from ghtriage.annotations import annotate_propagated_keys, fetch_and_annotate
 from ghtriage.config import get_db_path, get_pipelines_dir
 from ghtriage.derived import create_derived
 from ghtriage.full_text_search import create_search_indexes
+
+# The GitHub key each child table carries from its parent, so `issues__labels` joins on
+# `issue_number` rather than on the loader's own row link. dlt applies this recursively,
+# so any child table it creates under these parents gets the key too. Comments have no
+# number, so `id` is their key. `review_comments` has no arrays and so propagates
+# nothing today; it is listed so that a child table dlt creates there later is not the
+# one without a key.
+KEY_PROPAGATION = {
+    "issues": {"number": "issue_number"},
+    "pull_requests": {"number": "pull_request_number"},
+    "conversation_comments": {"id": "comment_id"},
+    "review_comments": {"id": "review_comment_id"},
+}
+
+# Bump when a change alters the shape of the raw tables an existing database already
+# holds (propagation config, resources, primary keys, table renames), and when a
+# derived object or full-text index is renamed or removed -- nothing drops an object
+# that has left its declaration, so existing databases would keep the orphan, frozen at
+# its last build. Edits to declared objects never require a bump: they are rebuilt from
+# scratch on every pull and cannot go stale in place.
+SCHEMA_GENERATION = 1
+
+
+class SchemaGenerationMismatch(RuntimeError):
+    """An incremental pull was aimed at a database whose raw-table shape is not this one's."""
+
+    def __init__(self, stored: int, current: int) -> None:
+        super().__init__(
+            f"This database is at schema generation {stored}, but this version of "
+            f"ghtriage expects generation {current}.\n"
+            "Run `ghtriage pull --full` to rebuild it."
+        )
 
 
 def _split_repo(repo: str) -> tuple[str, str]:
@@ -106,7 +139,12 @@ def build_rest_api_source(repo: str, token: str):
             },
         ],
     }
-    return rest_api_source(source_config)
+    source = rest_api_source(source_config)
+    # Copied because dlt normalizes the identifiers in place.
+    DataItemNormalizer.update_normalizer_config(
+        source.schema, {"propagation": {"tables": dict(KEY_PROPAGATION)}}
+    )
+    return source
 
 
 def _write_meta(db_path: Path, repo: str, full: bool) -> None:
@@ -123,6 +161,7 @@ def _write_meta(db_path: Path, repo: str, full: bool) -> None:
             ("repo", repo),
             ("last_pull_at", now),
             ("last_full_pull", str(full).lower()),
+            ("schema_generation", str(SCHEMA_GENERATION)),
         ]:
             conn.execute(
                 """
@@ -132,6 +171,18 @@ def _write_meta(db_path: Path, repo: str, full: bool) -> None:
                 """,
                 [key, value],
             )
+
+
+def _read_schema_generation(db_path: Path) -> int:
+    """Read the stamp an earlier pull left. Anything written before it existed reads as 0."""
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        try:
+            row = conn.execute(
+                "SELECT value FROM github._ghtriage_meta WHERE key = 'schema_generation'"
+            ).fetchone()
+        except duckdb.CatalogException:
+            return 0
+    return 0 if row is None else int(row[0])
 
 
 def create_pipeline(cwd: str | Path | None = None):
@@ -162,6 +213,12 @@ def run_pull(
             db_path.unlink()
         if pipelines_dir.exists():
             shutil.rmtree(pipelines_dir)
+    elif db_path.exists():
+        # Before the load, so a refused pull leaves the database old but internally
+        # consistent. There is no upgrade path other than `pull --full`, by design.
+        stored = _read_schema_generation(db_path)
+        if stored != SCHEMA_GENERATION:
+            raise SchemaGenerationMismatch(stored=stored, current=SCHEMA_GENERATION)
 
     pipeline = create_pipeline(cwd=cwd)
     source = build_rest_api_source(repo=repo, token=token)
@@ -194,5 +251,10 @@ def run_pull(
         fetch_and_annotate(db_path)
     except Exception as exc:
         warnings.append(f"schema annotation failed: {exc}")
+
+    try:
+        annotate_propagated_keys(db_path)
+    except Exception as exc:
+        warnings.append(f"join key documentation failed: {exc}")
 
     return load_info, warnings
