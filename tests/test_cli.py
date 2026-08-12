@@ -8,6 +8,7 @@ import duckdb
 import pytest
 
 from ghtriage.cli import run
+from ghtriage.pipeline import SchemaGenerationMismatch
 from ghtriage.query import execute_query
 
 
@@ -126,6 +127,25 @@ def test_pull_says_nothing_extra_when_no_step_warned(tmp_path: Path, monkeypatch
 
     assert rc == 0
     assert capsys.readouterr().err == ""
+
+
+def test_pull_reports_a_schema_generation_mismatch_and_exits_1(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda cli_repo=None: "owner/repo")
+
+    def refuse(**_kwargs):
+        raise SchemaGenerationMismatch(stored=0, current=1)
+
+    monkeypatch.setattr("ghtriage.cli.run_pull", refuse)
+
+    rc = run(["pull"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "generation 0" in err
+    assert "generation 1" in err
+    assert "ghtriage pull --full" in err
 
 
 def test_schema_lists_user_tables(sample_cwd: Path, monkeypatch, capsys) -> None:

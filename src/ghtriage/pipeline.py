@@ -12,6 +12,23 @@ from ghtriage.config import get_db_path, get_pipelines_dir
 from ghtriage.derived import create_derived
 from ghtriage.full_text_search import create_search_indexes
 
+# Bump when a change alters the shape of the raw tables an existing database already
+# holds (propagation config, resources, primary keys, table renames). Derived views and
+# full-text indexes never require a bump: they are rebuilt from scratch on every pull
+# and cannot go stale.
+SCHEMA_GENERATION = 1
+
+
+class SchemaGenerationMismatch(RuntimeError):
+    """An incremental pull was aimed at a database whose raw-table shape is not this one's."""
+
+    def __init__(self, stored: int, current: int) -> None:
+        super().__init__(
+            "This database was created by a ghtriage version with a different schema "
+            f"(generation {stored}; this version writes generation {current}).\n"
+            "Run `ghtriage pull --full` to rebuild it."
+        )
+
 
 def _split_repo(repo: str) -> tuple[str, str]:
     owner, name = repo.split("/", 1)
@@ -123,6 +140,7 @@ def _write_meta(db_path: Path, repo: str, full: bool) -> None:
             ("repo", repo),
             ("last_pull_at", now),
             ("last_full_pull", str(full).lower()),
+            ("schema_generation", str(SCHEMA_GENERATION)),
         ]:
             conn.execute(
                 """
@@ -132,6 +150,18 @@ def _write_meta(db_path: Path, repo: str, full: bool) -> None:
                 """,
                 [key, value],
             )
+
+
+def _read_schema_generation(db_path: Path) -> int:
+    """Read the stamp an earlier pull left. Anything written before it existed reads as 0."""
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        try:
+            row = conn.execute(
+                "SELECT value FROM github._ghtriage_meta WHERE key = 'schema_generation'"
+            ).fetchone()
+        except duckdb.CatalogException:
+            return 0
+    return 0 if row is None else int(row[0])
 
 
 def create_pipeline(cwd: str | Path | None = None):
@@ -162,6 +192,12 @@ def run_pull(
             db_path.unlink()
         if pipelines_dir.exists():
             shutil.rmtree(pipelines_dir)
+    elif db_path.exists():
+        # Before the load, so a refused pull leaves the database old but internally
+        # consistent. There is no upgrade path other than `pull --full`, by design.
+        stored = _read_schema_generation(db_path)
+        if stored != SCHEMA_GENERATION:
+            raise SchemaGenerationMismatch(stored=stored, current=SCHEMA_GENERATION)
 
     pipeline = create_pipeline(cwd=cwd)
     source = build_rest_api_source(repo=repo, token=token)
