@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import os
 from pathlib import Path
 import re
 import stat
@@ -561,7 +562,10 @@ def test_auth_setup_saves_the_pasted_token_stripped_and_private(auth_cwd, monkey
     token_path = auth_cwd / ".ghtriage" / "token"
     assert rc == 0
     assert token_path.read_text(encoding="utf-8").strip() == "ghp_pasted"
-    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+    if os.name == "posix":
+        # Windows has no POSIX modes -- chmod there only toggles the read-only bit,
+        # so the 0600 hardening is meaningful (and assertable) on POSIX only.
+        assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
 
 
 def test_auth_setup_rejects_an_empty_paste(auth_cwd, monkeypatch, capsys):

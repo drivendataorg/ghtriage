@@ -42,7 +42,7 @@ ghtriage auth setup
 
 It offers three methods and makes no network calls of its own:
 
-1. **Fine-grained personal access token** (recommended). Prints a prefilled link that asks for read-only access to issues and pull requests. You pick the resource owner and the single repository on GitHub's page; the token is saved to `.ghtriage/token` with `0600` permissions.
+1. **Fine-grained personal access token** (recommended). Prints a prefilled link that asks for read-only access to issues and pull requests. You pick the resource owner and the single repository on GitHub's page; the token is saved to `.ghtriage/token` with `0600` permissions (on POSIX systems; Windows file access is governed by ACLs instead).
 2. **Classic personal access token**. Prints a prefilled link for the `repo` scope. That scope grants read *and* write to everything you can reach — use it when your organization blocks fine-grained tokens or approval of one is stuck.
 3. **Reuse your gh CLI login**. Sets `[auth] use_gh_token = true` in `.ghtriage/config.toml`, after which ghtriage falls back to `gh auth token`. Convenient, but that token is much broader than a fine-grained PAT. `ghtriage auth setup --use-gh-token` picks this without the menu.
 
