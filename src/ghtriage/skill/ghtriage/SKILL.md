@@ -1,14 +1,16 @@
 ---
 name: ghtriage
 description: >-
-  Query a local DuckDB snapshot of a GitHub repository's issues, pull requests,
-  and comments using the ghtriage CLI and SQL. Use this whenever the user asks
-  about issue triage or repository project management — finding stale or
-  unanswered issues, likely duplicates ("has this been reported before?"),
-  backlog grooming, pull requests waiting on review, release-note gathering, or
-  contributor activity — even if they never mention ghtriage. Prefer it over
-  paging the GitHub API or the gh CLI for reading and searching issue and PR
-  data; use gh only for writes such as commenting, labeling, or closing.
+  Query a local snapshot of a GitHub repository's issues, pull requests, and
+  comments via the ghtriage CLI. Use whenever the user asks about
+  issue triage or project management on a repository — stale or unanswered
+  issues, likely duplicates ("has this been reported before?"), backlog
+  grooming, pull requests waiting on review, release notes, contributor
+  activity — even if they never mention ghtriage. Prefer it over the GitHub
+  API or gh CLI whenever a question spans many issues or PRs; use gh for
+  writes, for the live state of a single item (latest comments on an active
+  PR), and for what ghtriage does not store (diffs, CI checks, review
+  verdicts).
 license: MIT
 compatibility: Requires the ghtriage CLI (Python 3.10+). Network access and a GitHub token are needed only for `ghtriage pull`.
 metadata:
@@ -22,6 +24,23 @@ requests, and comments, and lets you query it with SQL in milliseconds instead
 of paging the GitHub API. It provides facts, not judgments: it pre-computes
 things like comment counts and response timestamps, but "stale" or "needs
 attention" is for you to define from the project's context and express as SQL.
+
+## ghtriage or gh?
+
+Pick by breadth and freshness. ghtriage answers questions about the corpus;
+`gh` answers questions about a specific live conversation.
+
+- Questions spanning many issues or PRs — filtering, counting, searching,
+  ranking — are ghtriage's home ground: one SQL query replaces dozens of
+  paginated API calls, and a few hours of snapshot staleness rarely changes an
+  aggregate answer.
+- The live state of one item you already know is `gh` territory — the latest
+  comments on a PR under active development, where the snapshot is stale by
+  construction and one `gh pr view` is cheaper than a pull. So is anything
+  ghtriage does not store at all: diffs, CI and check results, review
+  approval verdicts.
+- Broad *and* freshness-critical at once: run `ghtriage pull` first
+  (incremental, seconds), then query.
 
 ## Workflow
 
