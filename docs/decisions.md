@@ -9,6 +9,12 @@ An entry earns its place when both are true: a future reader might reasonably un
 without knowing why it was made, and there is no single code site where the reasoning would fit.
 If a comment beside the line (or a column doc) would reach that reader, write that instead.
 
+A decision, for this file, is a choice made against a concrete alternative — one someone would
+plausibly implement without the entry, with evidence for why it lost. Current scope is not a
+decision: the set of supported values, formats, or targets is self-evident from the code, and
+extending it later is addition, not reversal, so it earns no entry however deliberate today's
+boundary was. If you cannot name the rejected alternative, there is no entry to write.
+
 Entries are chronological and self-contained: a short heading (kept stable — cross-references
 link to it), one bold sentence stating the decision with its date and originating issue, then each
 rejected alternative and why it lost, with the key evidence inline.
