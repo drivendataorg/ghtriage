@@ -6,6 +6,7 @@
 
 The command-line interface (CLI) provides commands for:
 
+- setting up GitHub authentication and showing which token source is in use
 - pulling all issue, pull request, and comment data for a GitHub repository into the local database
 - showing the state and freshness of the local database
 - inspecting the database schema, including column documentation
@@ -33,18 +34,41 @@ Any tool that installs from a Git URL (`pip`, `pipx`) also works. Requires Pytho
 
 ### Setup
 
-ghtriage needs a GitHub token to pull data. Set the `GITHUB_TOKEN` environment variable (e.g., from `gh auth token`), or write a token to the `.ghtriage/token` file.
+ghtriage needs a GitHub token to pull data. Run:
 
-By default, `pull` targets the repository of the current directory's git `origin` remote. To target a different repository, use the `--repo` flag, or set a default in `.ghtriage/config.toml`:
+```bash
+ghtriage auth setup
+```
+
+It offers three methods and makes no network calls of its own:
+
+1. **Fine-grained personal access token** (recommended). Prints a prefilled link that asks for read-only access to issues and pull requests. You pick the resource owner and the single repository on GitHub's page; the token is saved to `.ghtriage/token` with `0600` permissions (on POSIX systems; Windows file access is governed by ACLs instead).
+2. **Classic personal access token**. Prints a prefilled link for the `repo` scope. That scope grants read *and* write to everything you can reach — use it when your organization blocks fine-grained tokens or approval of one is stuck.
+3. **Reuse your gh CLI login**. Sets `[auth] use_gh_token = true` in `.ghtriage/config.toml`, after which ghtriage falls back to `gh auth token`. Convenient, but that token is much broader than a fine-grained PAT. `ghtriage auth setup --use-gh-token` picks this without the menu.
+
+Tokens are resolved in the following order, and `ghtriage auth status` shows every source and which one wins:
+
+```
+GITHUB_TOKEN (env)  not set
+.ghtriage/token     found     <- in use
+gh auth token       disabled  (enable: ghtriage auth setup --use-gh-token)
+```
+
+Scripts and agents can skip the command entirely: set `GITHUB_TOKEN`, or write the token to `.ghtriage/token` directly.
+
+By default, `pull` targets the repository of the current directory's git `origin` remote. To target a different repository, use the `--repo` flag, or set it in `.ghtriage/config.toml`:
 
 ```toml
-[repo]
-default = "OWNER/REPO"
+repo = "OWNER/REPO"
 ```
+
+`.ghtriage/config.toml` is scaffolded when the `.ghtriage` directory is created with every key commented out.
 
 ### Commands
 
 ```bash
+ghtriage auth setup [--use-gh-token]
+ghtriage auth status
 ghtriage pull [--repo OWNER/REPO] [--full]
 ghtriage status
 ghtriage schema [--table TABLE_NAME]
@@ -81,19 +105,19 @@ ghtriage query "SELECT number, title, score FROM (SELECT number, title, round(ft
 
 ```
 .ghtriage/
-├── config.toml      # configuration, e.g., default repository (committable)
+├── config.toml      # configuration: target repository, auth preference
 ├── token            # GitHub token, if not using the GITHUB_TOKEN env var
 ├── ghtriage.duckdb  # the DuckDB database
 └── pipelines/       # incremental pull state
 ```
 
-The directory manages its own `.gitignore` so that only `config.toml` can be committed to version control; the token, database, and pull state are automatically excluded.
+The directory manages its own `.gitignore` and excludes all of itself from version control. The whole directory is a disposable cache: delete it and `ghtriage auth setup` plus `ghtriage pull` rebuild it.
 
 Some behaviors to be aware of:
 
 - **The database is a snapshot.** It reflects GitHub as of the last `pull` and never updates on its own. Use `status` to see what repository is in the database and how fresh the data is.
 - **Pulls are incremental.** Re-running `pull` fetches only what changed since the last pull, so it is cheap to run often. Use `--full` to delete the database and rebuild from scratch. After upgrading to a ghtriage version that changes the database layout, `pull` refuses and asks for a one-time `--full`.
-- **The target repository is resolved automatically.** In order of precedence: the `--repo` flag, the default set in `.ghtriage/config.toml`, then the current repository's git `origin` remote.
+- **The target repository is resolved automatically.** In order of precedence: the `--repo` flag, the `repo` key in `.ghtriage/config.toml`, then the current repository's git `origin` remote.
 
 ### What gets pulled
 

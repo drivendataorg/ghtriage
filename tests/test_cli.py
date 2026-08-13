@@ -1,13 +1,17 @@
 import csv
 import io
 import json
+import os
 from pathlib import Path
 import re
+import stat
 
 import duckdb
 import pytest
+import requests
 
 from ghtriage.cli import run
+from ghtriage.config import GhTokenResult, load_config
 from ghtriage.pipeline import SchemaGenerationMismatch
 from ghtriage.query import execute_query
 
@@ -103,7 +107,7 @@ def test_pull_points_at_a_full_refresh_when_a_step_warned(tmp_path: Path, monkey
     """Every post-load failure has the same one-command recovery, so say it next to them."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda cli_repo=None: "owner/repo")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
     monkeypatch.setattr(
         "ghtriage.cli.run_pull",
         lambda **_kwargs: ("load info", ["derived objects failed: boom"]),
@@ -120,7 +124,7 @@ def test_pull_points_at_a_full_refresh_when_a_step_warned(tmp_path: Path, monkey
 def test_pull_says_nothing_extra_when_no_step_warned(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda cli_repo=None: "owner/repo")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
     monkeypatch.setattr("ghtriage.cli.run_pull", lambda **_kwargs: ("load info", []))
 
     rc = run(["pull"])
@@ -132,7 +136,7 @@ def test_pull_says_nothing_extra_when_no_step_warned(tmp_path: Path, monkeypatch
 def test_pull_reports_a_schema_generation_mismatch_and_exits_1(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda cli_repo=None: "owner/repo")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
 
     def refuse(**_kwargs):
         raise SchemaGenerationMismatch(stored=0, current=1)
@@ -146,6 +150,120 @@ def test_pull_reports_a_schema_generation_mismatch_and_exits_1(tmp_path, monkeyp
     assert "generation 0" in err
     assert "generation 1" in err
     assert "ghtriage pull --full" in err
+
+
+def test_pull_without_a_token_points_at_auth_setup(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
+
+    rc = run(["pull"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "ghtriage auth setup" in err
+    assert "GITHUB_TOKEN" in err
+    assert ".ghtriage/token" in err
+
+
+def _pull_fails_with_http_status(monkeypatch, status_code: int) -> None:
+    """The failure shaped the way dlt actually raises it: a requests.HTTPError carrying
+    its Response, wrapped a few frames up (PipelineStepFailed from ResourceExtractionError)."""
+
+    def fail(**_kwargs):
+        response = requests.Response()
+        response.status_code = status_code
+        inner = requests.HTTPError(f"{status_code} Client Error", response=response)
+        try:
+            raise inner
+        except requests.HTTPError as exc:
+            raise RuntimeError("pipeline step failed") from exc
+
+    monkeypatch.setattr("ghtriage.cli.run_pull", fail)
+
+
+def test_pull_explains_a_404_from_github(tmp_path: Path, monkeypatch, capsys) -> None:
+    """`auth setup` validates nothing: a typo'd repo name, a token that cannot see the
+    repository, and a pending org approval all surface here as the same 404."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
+    _pull_fails_with_http_status(monkeypatch, 404)
+
+    rc = run(["pull"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "404" in err
+    # The cheapest explanation comes first: the repository may simply not exist.
+    assert "owner/repo" in err
+    assert "exists" in err
+    assert "org" in err
+    assert "classic" in err
+    assert "ghtriage auth setup" in err
+
+
+def test_pull_explains_a_401_from_github(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
+    _pull_fails_with_http_status(monkeypatch, 401)
+
+    rc = run(["pull"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "401" in err
+    assert "invalid or expired" in err
+    assert "ghtriage auth setup" in err
+    # A bad credential is not a 404: no detour through repo names or org approval.
+    assert "awaiting org approval" not in err
+
+
+def test_pull_explains_a_403_from_github(tmp_path: Path, monkeypatch, capsys) -> None:
+    """A classic token an SSO-enforcing org has not authorized is refused with 403."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
+    _pull_fails_with_http_status(monkeypatch, 403)
+
+    rc = run(["pull"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "403" in err
+    assert "SSO" in err
+    assert "rate limit" in err
+
+
+def test_pull_warns_once_per_unrecognized_config_key(tmp_path: Path, monkeypatch, capsys):
+    """Both repo and token resolution read the config; the user should hear about a typo once."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    ghtriage_dir = tmp_path / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "config.toml").write_text(
+        'repo = "owner/repo"\nrepoo = "typo"\n', encoding="utf-8"
+    )
+
+    run(["pull"])
+
+    assert capsys.readouterr().err.count("unrecognized key 'repoo'") == 1
+
+
+def test_pull_lets_an_unrelated_failure_raise(tmp_path: Path, monkeypatch) -> None:
+    """A loud error is an acceptable outcome; only the auth case gets a translation."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
+
+    def fail(**_kwargs):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr("ghtriage.cli.run_pull", fail)
+
+    with pytest.raises(RuntimeError, match="disk on fire"):
+        run(["pull"])
 
 
 def test_schema_lists_user_tables(sample_cwd: Path, monkeypatch, capsys) -> None:
@@ -261,7 +379,7 @@ def status_cwd(tmp_path: Path) -> Path:
 def test_status_shows_db_info(status_cwd: Path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(status_cwd)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda: "owner/repo")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
 
     rc = run(["status"])
 
@@ -269,14 +387,31 @@ def test_status_shows_db_info(status_cwd: Path, monkeypatch, capsys) -> None:
     assert rc == 0
     assert "owner/repo" in captured.out
     assert "2026-02-28" in captured.out
-    assert "GITHUB_TOKEN" in captured.out
     assert captured.err == ""
+
+
+def test_status_reports_a_config_the_loader_rejects_and_exits_1(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """`status` reports state; a rejected config must stay loud, not read as merely unset —
+    and the loudness is a message and exit 1, not a traceback."""
+    monkeypatch.chdir(tmp_path)
+    ghtriage_dir = tmp_path / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "config.toml").write_text('[auth]\nuse_gh_token = "yes"\n', encoding="utf-8")
+
+    rc = run(["status"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "use_gh_token" in err
+    assert "expected a boolean" in err
 
 
 def test_status_not_yet_pulled_without_db(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda: "owner/repo")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
 
     rc = run(["status"])
 
@@ -289,7 +424,7 @@ def test_status_not_yet_pulled_without_db(tmp_path: Path, monkeypatch, capsys) -
 def test_status_shows_mismatch_warning(status_cwd: Path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(status_cwd)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
-    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda: "owner/other-repo")
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/other-repo")
 
     rc = run(["status"])
 
@@ -304,7 +439,8 @@ def test_status_handles_missing_config_repo(status_cwd: Path, monkeypatch, capsy
     monkeypatch.chdir(status_cwd)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
     monkeypatch.setattr(
-        "ghtriage.cli.resolve_repo", lambda: (_ for _ in ()).throw(RuntimeError("no remote"))
+        "ghtriage.cli.resolve_repo",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("no remote")),
     )
 
     rc = run(["status"])
@@ -312,6 +448,373 @@ def test_status_handles_missing_config_repo(status_cwd: Path, monkeypatch, capsy
     captured = capsys.readouterr()
     assert rc == 0
     assert "unknown" in captured.out
+
+
+@pytest.fixture
+def auth_cwd(tmp_path: Path, monkeypatch) -> Path:
+    """A working directory where repo resolution succeeds and nothing else is set up."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr("ghtriage.cli.resolve_repo", lambda **_kwargs: "owner/repo")
+    return tmp_path
+
+
+def _answer(monkeypatch, *, choice: str | None = None, token: str | None = None) -> None:
+    if choice is not None:
+        monkeypatch.setattr("builtins.input", lambda _prompt="": choice)
+    if token is not None:
+        monkeypatch.setattr("ghtriage.cli.getpass", lambda _prompt="": token)
+
+
+def test_auth_setup_creates_the_directory_and_scaffolding_eagerly(auth_cwd, monkeypatch, capsys):
+    """Aborting at the paste prompt still leaves a usable, hand-editable directory."""
+    _answer(monkeypatch, choice="1")
+    monkeypatch.setattr(
+        "ghtriage.cli.getpass", lambda _prompt="": (_ for _ in ()).throw(EOFError())
+    )
+
+    rc = run(["auth", "setup"])
+
+    capsys.readouterr()
+    assert rc == 1
+    assert (auth_cwd / ".ghtriage" / ".gitignore").exists()
+    assert (auth_cwd / ".ghtriage" / "config.toml").exists()
+    assert not (auth_cwd / ".ghtriage" / "token").exists()
+
+
+def test_auth_setup_menu_defaults_to_the_fine_grained_token(auth_cwd, monkeypatch, capsys):
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": (prompts.append(prompt), "")[1])
+    _answer(monkeypatch, token="ghp_pasted")
+
+    rc = run(["auth", "setup"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert prompts == ["Choice [1]: "]
+    assert "1. Fine-grained personal access token" in out
+    assert "https://github.com/settings/personal-access-tokens/new?" in out
+
+
+def test_auth_setup_fine_grained_link_carries_the_read_only_permissions(
+    auth_cwd, monkeypatch, capsys
+):
+    _answer(monkeypatch, choice="1", token="ghp_pasted")
+
+    run(["auth", "setup"])
+
+    out = capsys.readouterr().out
+    # Each parameter matters; their order in the query string does not.
+    assert "https://github.com/settings/personal-access-tokens/new?" in out
+    for param in (
+        "name=ghtriage+(owner/repo)",
+        "description=Read+issues+and+PRs+for+ghtriage",
+        "target_name=owner",
+        "issues=read",
+        "pull_requests=read",
+    ):
+        assert param in out
+    # The URL cannot select the repository or the owner, so the instructions must.
+    assert "Only select repositories" in out
+    assert "owner/repo" in out
+
+
+def test_auth_setup_classic_link_carries_the_repo_scope_and_its_tradeoff(
+    auth_cwd, monkeypatch, capsys
+):
+    _answer(monkeypatch, choice="2", token="ghp_pasted")
+
+    run(["auth", "setup"])
+
+    out = capsys.readouterr().out
+    assert (
+        "https://github.com/settings/tokens/new?scopes=repo&description=ghtriage+(owner/repo)"
+        in out
+    )
+    assert "write" in out
+
+
+def test_auth_setup_falls_back_to_generic_links_when_the_repo_is_unknown(
+    tmp_path: Path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "ghtriage.cli.resolve_repo",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("no remote")),
+    )
+    _answer(monkeypatch, choice="1", token="ghp_pasted")
+
+    rc = run(["auth", "setup"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "https://github.com/settings/personal-access-tokens/new?name=ghtriage&" in out
+    assert "target_name" not in out
+
+
+def test_auth_setup_saves_the_pasted_token_stripped_and_private(auth_cwd, monkeypatch, capsys):
+    _answer(monkeypatch, choice="1", token="  ghp_pasted \n")
+
+    rc = run(["auth", "setup"])
+
+    capsys.readouterr()
+    token_path = auth_cwd / ".ghtriage" / "token"
+    assert rc == 0
+    assert token_path.read_text(encoding="utf-8").strip() == "ghp_pasted"
+    if os.name == "posix":
+        # Windows has no POSIX modes -- chmod there only toggles the read-only bit,
+        # so the 0600 hardening is meaningful (and assertable) on POSIX only.
+        assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+
+
+def test_auth_setup_rejects_an_empty_paste(auth_cwd, monkeypatch, capsys):
+    _answer(monkeypatch, choice="1", token="   ")
+
+    rc = run(["auth", "setup"])
+
+    assert rc == 1
+    assert "No token" in capsys.readouterr().err
+    assert not (auth_cwd / ".ghtriage" / "token").exists()
+
+
+def test_auth_setup_warns_that_the_environment_wins_over_the_saved_file(
+    auth_cwd, monkeypatch, capsys
+):
+    monkeypatch.setenv("GITHUB_TOKEN", "env-token")
+    _answer(monkeypatch, choice="1", token="ghp_pasted")
+
+    run(["auth", "setup"])
+
+    captured = capsys.readouterr()
+    assert "GITHUB_TOKEN" in captured.out + captured.err
+    assert "precedence" in captured.out + captured.err
+
+
+def test_auth_setup_says_when_an_existing_token_file_will_be_replaced(
+    auth_cwd, monkeypatch, capsys
+):
+    ghtriage_dir = auth_cwd / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "token").write_text("old-token\n", encoding="utf-8")
+    _answer(monkeypatch, choice="1", token="ghp_pasted")
+
+    run(["auth", "setup"])
+
+    out = capsys.readouterr().out
+    assert "already exists" in out
+    assert (ghtriage_dir / "token").read_text(encoding="utf-8").strip() == "ghp_pasted"
+
+
+def test_auth_setup_rejects_an_unrecognized_choice(auth_cwd, monkeypatch, capsys):
+    _answer(monkeypatch, choice="9")
+
+    rc = run(["auth", "setup"])
+
+    assert rc == 1
+    assert "9" in capsys.readouterr().err
+
+
+def test_auth_setup_choice_three_enables_the_gh_fallback(auth_cwd, monkeypatch, capsys):
+    _answer(monkeypatch, choice="3")
+    monkeypatch.setattr("ghtriage.cli.gh_cli_token", lambda: GhTokenResult(token="gh-token"))
+
+    rc = run(["auth", "setup"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert load_config(cwd=auth_cwd).use_gh_token is True
+    assert "gh" in out
+
+
+def test_auth_setup_use_gh_token_flag_skips_the_menu(auth_cwd, monkeypatch, capsys):
+    def no_prompt(_prompt=""):
+        raise AssertionError("--use-gh-token must not prompt")
+
+    monkeypatch.setattr("builtins.input", no_prompt)
+    monkeypatch.setattr("ghtriage.cli.gh_cli_token", lambda: GhTokenResult(token="gh-token"))
+
+    rc = run(["auth", "setup", "--use-gh-token"])
+
+    capsys.readouterr()
+    assert rc == 0
+    assert load_config(cwd=auth_cwd).use_gh_token is True
+
+
+def test_auth_setup_use_gh_token_flag_skips_repo_resolution(auth_cwd, monkeypatch, capsys):
+    """The gh path prints no links, so it has no reason to spawn `git remote`."""
+    calls: list[None] = []
+    monkeypatch.setattr(
+        "ghtriage.cli.resolve_repo", lambda **_kwargs: calls.append(None) or "owner/repo"
+    )
+    monkeypatch.setattr("ghtriage.cli.gh_cli_token", lambda: GhTokenResult(token="gh-token"))
+
+    rc = run(["auth", "setup", "--use-gh-token"])
+
+    capsys.readouterr()
+    assert rc == 0
+    assert calls == []
+
+
+def test_enable_gh_fallback_is_honest_about_precedence(auth_cwd, monkeypatch, capsys):
+    """The user just chose gh; saying "ghtriage can authenticate" while another token
+    silently keeps winning would misreport their own setup back to them. Name each
+    source that still wins, and say where to verify."""
+    monkeypatch.setenv("GITHUB_TOKEN", "env-token")
+    ghtriage_dir = auth_cwd / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "token").write_text("file-token\n", encoding="utf-8")
+    monkeypatch.setattr("ghtriage.cli.gh_cli_token", lambda: GhTokenResult(token="gh-token"))
+
+    rc = run(["auth", "setup", "--use-gh-token"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.count("takes precedence") == 2
+    assert "GITHUB_TOKEN" in out
+    assert ".ghtriage/token" in out
+    assert "ghtriage auth status" in out
+
+
+def test_auth_setup_gh_path_still_reports_config_problems(auth_cwd, monkeypatch, capsys):
+    """The one command that writes the config must not be the one that skips reading it."""
+    ghtriage_dir = auth_cwd / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "config.toml").write_text('repoo = "typo"\n', encoding="utf-8")
+    monkeypatch.setattr("ghtriage.cli.gh_cli_token", lambda: GhTokenResult(token="gh-token"))
+
+    rc = run(["auth", "setup", "--use-gh-token"])
+
+    assert rc == 0
+    assert capsys.readouterr().err.count("unrecognized key 'repoo'") == 1
+
+
+def test_auth_setup_gh_path_refuses_a_config_the_loader_rejects(auth_cwd, monkeypatch, capsys):
+    original = 'use_gh_token = "yes"\n'
+    ghtriage_dir = auth_cwd / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "config.toml").write_text(f"[auth]\n{original}", encoding="utf-8")
+    monkeypatch.setattr("ghtriage.cli.gh_cli_token", lambda: GhTokenResult(token="gh-token"))
+
+    rc = run(["auth", "setup", "--use-gh-token"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "expected a boolean" in err
+    # Refused before the write: the broken file is left exactly as the user had it.
+    assert (ghtriage_dir / "config.toml").read_text(encoding="utf-8") == f"[auth]\n{original}"
+
+
+def test_auth_setup_gh_fallback_preserves_hand_edits(auth_cwd, monkeypatch, capsys):
+    ghtriage_dir = auth_cwd / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "config.toml").write_text(
+        '# hand written\nrepo = "owner/other"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr("ghtriage.cli.gh_cli_token", lambda: GhTokenResult(token="gh-token"))
+
+    run(["auth", "setup", "--use-gh-token"])
+
+    capsys.readouterr()
+    text = (ghtriage_dir / "config.toml").read_text(encoding="utf-8")
+    assert "# hand written" in text
+    assert load_config(cwd=auth_cwd).repo == "owner/other"
+    assert load_config(cwd=auth_cwd).use_gh_token is True
+
+
+def test_auth_setup_writes_the_setting_even_when_gh_is_unusable(auth_cwd, monkeypatch, capsys):
+    """The user may install or log into gh afterward; the preference is theirs either way."""
+    monkeypatch.setattr(
+        "ghtriage.cli.gh_cli_token",
+        lambda: GhTokenResult(error="gh CLI is not logged in (run `gh auth login`)"),
+    )
+
+    rc = run(["auth", "setup", "--use-gh-token"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "gh auth login" in captured.out + captured.err
+    assert load_config(cwd=auth_cwd).use_gh_token is True
+
+
+def test_auth_status_lists_every_source_and_marks_the_one_in_use(auth_cwd, monkeypatch, capsys):
+    ghtriage_dir = auth_cwd / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "token").write_text("file-token\n", encoding="utf-8")
+
+    rc = run(["auth", "status"])
+
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.strip()]
+    assert rc == 0
+    assert lines[0].startswith("GITHUB_TOKEN (env)")
+    assert "not set" in lines[0]
+    assert lines[1].startswith(".ghtriage/token")
+    assert "found" in lines[1]
+    assert "<- in use" in lines[1]
+    assert lines[2].startswith("gh auth token")
+    assert "disabled" in lines[2]
+    assert "ghtriage auth setup --use-gh-token" in lines[2]
+    # States and names only -- the token value itself must never reach the output.
+    assert "file-token" not in out
+
+
+def test_auth_status_arrow_follows_precedence(auth_cwd, monkeypatch, capsys):
+    ghtriage_dir = auth_cwd / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "token").write_text("file-token\n", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_TOKEN", "env-token")
+
+    run(["auth", "status"])
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert "<- in use" in lines[0]
+    assert "<- in use" not in lines[1]
+
+
+def test_auth_status_reports_the_gh_source_when_the_fallback_is_enabled(
+    auth_cwd, monkeypatch, capsys
+):
+    ghtriage_dir = auth_cwd / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "config.toml").write_text("[auth]\nuse_gh_token = true\n", encoding="utf-8")
+    monkeypatch.setattr("ghtriage.config.gh_cli_token", lambda: GhTokenResult(token="gh-token"))
+
+    run(["auth", "status"])
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert "available" in lines[2]
+    assert "<- in use" in lines[2]
+
+
+def test_auth_status_reports_an_enabled_but_unusable_gh(auth_cwd, monkeypatch, capsys):
+    ghtriage_dir = auth_cwd / ".ghtriage"
+    ghtriage_dir.mkdir()
+    (ghtriage_dir / "config.toml").write_text("[auth]\nuse_gh_token = true\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "ghtriage.config.gh_cli_token", lambda: GhTokenResult(error="gh CLI is not installed")
+    )
+
+    run(["auth", "status"])
+
+    out = capsys.readouterr().out
+    assert "not available" in out
+    assert "not installed" in out
+    assert "<- in use" not in out
+
+
+def test_auth_status_points_at_setup_when_nothing_is_configured(auth_cwd, monkeypatch, capsys):
+    rc = run(["auth", "status"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ghtriage auth setup" in out
+
+
+def test_auth_requires_a_subcommand(auth_cwd, monkeypatch):
+    with pytest.raises(SystemExit) as exc_info:
+        run(["auth"])
+    assert exc_info.value.code == 2
 
 
 @pytest.fixture
