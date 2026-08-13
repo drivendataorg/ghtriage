@@ -32,9 +32,15 @@ Run commands from the project root (the directory holding `.ghtriage/`).
    last pulled. Querying without checking freshness silently answers from old
    data.
 2. **`ghtriage pull`** — if the database is missing or stale. Pulls are
-   incremental and cheap to re-run. Needs a GitHub token (`GITHUB_TOKEN` env
-   var or `.ghtriage/token` file). If pull refuses and asks for `--full` after
-   a version upgrade, that is expected — run `ghtriage pull --full` once.
+   incremental and cheap to re-run. Authentication comes from `GITHUB_TOKEN`,
+   a `.ghtriage/token` file, or an opt-in `gh` CLI fallback; run
+   `ghtriage auth status` to see every source and which one wins. If none is
+   configured, ask the user to run `ghtriage auth setup` — it is an
+   interactive command for a human, and tokens are credentials you should not
+   be handling. When pull fails with an HTTP 401/403/404, it prints a
+   diagnosis and next steps on stderr — relay that to the user instead of
+   retrying. If pull refuses and asks for `--full` after a version upgrade,
+   that is expected — run `ghtriage pull --full` once.
 3. **`ghtriage schema`** — before writing SQL. Tables exist only if data
    exists (a repo with no PRs has no `pull_requests` table), so never assume;
    the schema listing is the authoritative inventory, including the full-text
