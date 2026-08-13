@@ -243,3 +243,42 @@ Rejected: warning after the pull. The mixed database already exists by then, and
 scrolls past while the wrong joins happen later and quietly.
 Rejected: auto-escalating a mismatch to a full pull. It silently deletes the database and spends
 minutes and API quota the user did not ask for.
+
+### Config file is not committable
+
+**`.ghtriage/` is ignored in full — `config.toml` included — reversing the whitelist that let it
+be committed.** (2026-08-13, auth and configuration UX)
+Rejected: keeping `!config.toml` in the directory's self-managed `.gitignore` so a repository can
+share a checked-in default. Its one repo-wide key, `repo`, answers a question the git `origin`
+remote already answers for anyone who cloned the repository, so the committed file would say
+nothing new; and the file now also carries `[auth] use_gh_token`, a per-user preference about a
+per-user credential that has no business in a team's version control. The whole directory is a
+disposable per-user cache, and a cache with one committable file inside it is a rule everyone has
+to remember.
+Rejected: migration logic for directories created before the change. `_ensure_local_gitignore`
+still only writes when the file is absent, so an existing directory keeps the old whitelist until
+its `.gitignore` is deleted — acceptable for a directory `pull --full` rebuilds in minutes, and
+cheaper than a rewrite path that has to decide whether a hand-edited ignore file is stale.
+
+### Hand-edited config, no config commands
+
+**`config.toml` is scaffolded as fully commented-out boilerplate and hand-edited from there; the
+only value ghtriage writes is `[auth] use_gh_token`, set by `auth setup` through tomlkit's
+comment-preserving round-trip.** (2026-08-13, auth and configuration UX)
+Rejected: `ghtriage config set` / `config get`. The schema is two keys; a command pair to edit
+them is more surface than the thing being edited, and it would own the file's formatting forever
+— the scaffolded comments explaining each key are the actual documentation and a naive writer
+destroys them. The gh fallback is the one exception because it is set as a side effect of a menu
+choice, not by someone who has the file open.
+Rejected: writing the file only when a value is needed. Scaffolding it at directory creation is
+what makes hand-editing discoverable: the keys, their types, and their defaults are already in
+front of the reader. Every key is commented out, so a fresh scaffold parses as an empty config
+and changes nothing.
+Rejected: an `init` command whose job is the scaffolding. Both entry points into the tool create
+the directory already — `auth setup` eagerly at command start, `pull` when it writes — so `init`
+would be a command that only ever runs `mkdir`.
+Rejected: ignoring unrecognized keys, as a stricter loader's alternative. A hand-edited file makes
+typos the expected failure, and a silently ignored `repoo = ` is a silent wrong answer: the pull
+targets the wrong repository with no signal. Unknown keys and tables warn on stderr — which is
+also what surfaces a leftover old-style `[repo]` table after the rename to top-level `repo`. Type
+errors stay loud, since a `repo` that is not a string cannot be honored at all.
