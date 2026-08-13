@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -100,6 +101,14 @@ def _read_token_file(path: Path) -> str | None:
 
 
 @dataclass(frozen=True)
+class GhtriageConfig:
+    """Everything `.ghtriage/config.toml` can say. Absent keys keep their defaults."""
+
+    repo: str | None = None
+    use_gh_token: bool = False
+
+
+@dataclass(frozen=True)
 class GhTokenResult:
     """Outcome of `gh auth token`. `error` says why there is no token, for the user."""
 
@@ -131,26 +140,30 @@ class TokenSource:
     """One place a token can come from, with everything `auth status` needs to render it."""
 
     name: str
-    label: str
     state: str
     token: str | None = None
     note: str = ""
 
 
 def token_sources(
-    cwd: str | Path | None = None, env: dict[str, str] | None = None
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    config: GhtriageConfig | None = None,
 ) -> list[TokenSource]:
     """Every source, resolved, in precedence order. `auth status` renders this."""
-    return list(_iter_token_sources(cwd=cwd, env=env))
+    return list(_iter_token_sources(cwd=cwd, env=env, config=config))
 
 
-def _iter_token_sources(cwd: str | Path | None = None, env: dict[str, str] | None = None):
+def _iter_token_sources(
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    config: GhtriageConfig | None = None,
+) -> Iterator[TokenSource]:
     """Lazy, so `resolve_token` stops before spending a subprocess it does not need."""
     env_data = env if env is not None else os.environ
     env_token = env_data.get("GITHUB_TOKEN") or None
     yield TokenSource(
         name="GITHUB_TOKEN (env)",
-        label="GITHUB_TOKEN (env)",
         state="found" if env_token else "not set",
         token=env_token,
     )
@@ -158,15 +171,15 @@ def _iter_token_sources(cwd: str | Path | None = None, env: dict[str, str] | Non
     file_token = _read_token_file(get_ghtriage_dir(cwd=cwd, create=False) / "token")
     yield TokenSource(
         name=".ghtriage/token",
-        label=".ghtriage/token (file)",
         state="found" if file_token else "not set",
         token=file_token,
     )
 
-    if not load_config(cwd=cwd).use_gh_token:
+    if config is None:
+        config = load_config(cwd=cwd)
+    if not config.use_gh_token:
         yield TokenSource(
             name="gh auth token",
-            label="gh CLI (fallback)",
             state="disabled",
             note="(enable: ghtriage auth setup --use-gh-token)",
         )
@@ -175,7 +188,6 @@ def _iter_token_sources(cwd: str | Path | None = None, env: dict[str, str] | Non
     result = gh_cli_token()
     yield TokenSource(
         name="gh auth token",
-        label="gh CLI (fallback)",
         state="available" if result.token else "not available",
         token=result.token,
         note="" if result.token else f"({result.error})",
@@ -183,30 +195,33 @@ def _iter_token_sources(cwd: str | Path | None = None, env: dict[str, str] | Non
 
 
 def resolve_token(
-    cwd: str | Path | None = None, env: dict[str, str] | None = None
-) -> tuple[str | None, str]:
-    """Return (token, source_label) without raising if the token is missing."""
-    for source in _iter_token_sources(cwd=cwd, env=env):
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    config: GhtriageConfig | None = None,
+) -> str | None:
+    """The winning token, or None; never raises for a token that is merely missing."""
+    for source in _iter_token_sources(cwd=cwd, env=env, config=config):
         if source.token:
-            return source.token, source.label
-    return None, "not configured"
-
-
-@dataclass(frozen=True)
-class GhtriageConfig:
-    """Everything `.ghtriage/config.toml` can say. Absent keys keep their defaults."""
-
-    repo: str | None = None
-    use_gh_token: bool = False
+            return source.token
+    return None
 
 
 CONFIG_KEYS = ("repo",)
 CONFIG_TABLES = {"auth": ("use_gh_token",)}
 
 
+class ConfigError(RuntimeError):
+    """A config.toml ghtriage cannot honor. The CLI reports these as messages, not
+    tracebacks; anything else that raises stays a loud, unexpected error."""
+
+
 def _warn_unrecognized(config_data: dict, config_path: Path) -> None:
     """The file is hand-edited, so a typo'd key would otherwise silently do nothing."""
     for key, value in config_data.items():
+        if not isinstance(value, dict) and key in CONFIG_TABLES:
+            # A scalar named after a known table is a type error load_config raises;
+            # calling a recognized name "unrecognized" here would be false.
+            continue
         if isinstance(value, dict):
             known_sub_keys = CONFIG_TABLES.get(key)
             if known_sub_keys is None:
@@ -241,7 +256,7 @@ def load_config(cwd: str | Path | None = None) -> GhtriageConfig:
         with config_path.open("rb") as file_obj:
             config_data = tomllib.load(file_obj)
     except tomllib.TOMLDecodeError as exc:
-        raise RuntimeError(f"Invalid TOML in {config_path}: {exc}") from exc
+        raise ConfigError(f"Invalid TOML in {config_path}: {exc}") from exc
 
     _warn_unrecognized(config_data, config_path)
 
@@ -249,16 +264,20 @@ def load_config(cwd: str | Path | None = None) -> GhtriageConfig:
     repo: str | None = None
     if repo_value is not None:
         if not isinstance(repo_value, str):
-            raise RuntimeError(f"Invalid repo in {config_path}: expected a string")
+            raise ConfigError(f"Invalid repo in {config_path}: expected a string")
         repo = repo_value.strip() or None
+        if repo is not None and not REPO_SLUG_PATTERN.fullmatch(repo):
+            raise ConfigError(f"Invalid repo in {config_path}: expected OWNER/REPO, got: {repo}")
 
     use_gh_token = False
     auth_data = config_data.get("auth")
+    if auth_data is not None and not isinstance(auth_data, dict):
+        raise ConfigError(f"Invalid auth in {config_path}: expected a table")
     if isinstance(auth_data, dict):
         use_gh_token_value = auth_data.get("use_gh_token")
         if use_gh_token_value is not None:
             if not isinstance(use_gh_token_value, bool):
-                raise RuntimeError(
+                raise ConfigError(
                     f"Invalid [auth].use_gh_token in {config_path}: expected a boolean"
                 )
             use_gh_token = use_gh_token_value
@@ -273,7 +292,10 @@ def enable_gh_token_fallback(cwd: str | Path | None = None) -> Path:
     and hand edits intact, so this behaves the same on a fresh scaffold and an edited file.
     """
     config_path = get_ghtriage_dir(cwd=cwd, create=True) / "config.toml"
-    document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+    try:
+        document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+    except tomlkit.exceptions.ParseError as exc:
+        raise ConfigError(f"Invalid TOML in {config_path}: {exc}") from exc
     auth_table = document.get("auth")
     if not isinstance(auth_table, dict):
         auth_table = tomlkit.table()
@@ -307,13 +329,19 @@ def get_git_remote_origin(cwd: str | Path | None = None) -> str:
     return remote
 
 
-def resolve_repo(cli_repo: str | None = None, cwd: str | Path | None = None) -> str:
+def resolve_repo(
+    cli_repo: str | None = None,
+    cwd: str | Path | None = None,
+    config: GhtriageConfig | None = None,
+) -> str:
     if cli_repo:
         return _validate_repo_slug(cli_repo)
 
-    config_repo = load_config(cwd=cwd).repo
-    if config_repo:
-        return _validate_repo_slug(config_repo)
+    if config is None:
+        config = load_config(cwd=cwd)
+    if config.repo:
+        # Validated by load_config, the one boundary every config value crosses.
+        return config.repo
 
     remote = get_git_remote_origin(cwd=cwd)
     return parse_git_remote(remote)

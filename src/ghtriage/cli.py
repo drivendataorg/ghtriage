@@ -8,10 +8,13 @@ import sys
 from typing import Sequence
 
 from ghtriage.config import (
+    ConfigError,
+    GhtriageConfig,
     enable_gh_token_fallback,
     get_db_path,
     get_ghtriage_dir,
     gh_cli_token,
+    load_config,
     resolve_repo,
     resolve_token,
     token_sources,
@@ -58,7 +61,10 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="Show database state and data summary")
 
     auth_parser = subparsers.add_parser("auth", help="Set up and inspect GitHub authentication")
-    auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
+    # metavar, so the missing-subcommand error names the choices, not the dest.
+    auth_subparsers = auth_parser.add_subparsers(
+        dest="auth_command", metavar="{setup,status}", required=True
+    )
     auth_setup_parser = auth_subparsers.add_parser(
         "setup", help="Choose an authentication method and save a token"
     )
@@ -73,21 +79,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _auth_http_status(exc: BaseException) -> int | None:
-    """The 401/404 in the chain dlt raises, if there is one.
+    """The auth-shaped HTTP status in the chain dlt raises, if there is one.
 
-    GitHub answers a token that cannot see a repository with 404, not 403, so both codes
-    mean the same thing to a user: the token, not the repository name, is suspect.
+    dlt wraps the requests.HTTPError (which carries its Response) in
+    ResourceExtractionError and PipelineStepFailed, chained via `from`.
     """
-    seen: set[int] = set()
     current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        for candidate in (
-            getattr(getattr(current, "response", None), "status_code", None),
-            getattr(current, "status_code", None),
-        ):
-            if candidate in (401, 404):
-                return candidate
+    while current is not None:
+        candidate = getattr(getattr(current, "response", None), "status_code", None)
+        if candidate in (401, 403, 404):
+            return candidate
         current = current.__cause__ or current.__context__
     return None
 
@@ -95,24 +96,48 @@ def _auth_http_status(exc: BaseException) -> int | None:
 def _print_auth_failure_guidance(status_code: int, repo: str) -> None:
     print(f"GitHub rejected the request (HTTP {status_code}).", file=sys.stderr)
     print("Check which token ghtriage is using: ghtriage auth status", file=sys.stderr)
+    if status_code == 401:
+        print(
+            "The token is invalid or expired. Save a new one: ghtriage auth setup",
+            file=sys.stderr,
+        )
+        return
+    if status_code == 403:
+        print(
+            f"The token was refused. If {repo} belongs to an organization that enforces",
+            file=sys.stderr,
+        )
+        print(
+            'SAML SSO, authorize the token for that organization ("Configure SSO" on',
+            file=sys.stderr,
+        )
+        print(
+            "https://github.com/settings/tokens). A 403 can also mean the API rate limit",
+            file=sys.stderr,
+        )
+        print("is exhausted -- wait and retry.", file=sys.stderr)
+        return
+    print(f"Check that {repo} exists and is spelled correctly.", file=sys.stderr)
     print(
-        f"GitHub returns 404 for anything a token cannot see, so if {repo} is a private, "
-        "org-owned",
+        "If it does: GitHub returns 404 for anything a token cannot see, so if it is a private,",
         file=sys.stderr,
     )
     print(
-        "repository, a fine-grained token may still be awaiting org approval. Ask an org admin to",
+        "org-owned repository, a fine-grained token may still be awaiting org approval. Ask an",
         file=sys.stderr,
     )
     print(
-        "approve it, or create a classic token instead: ghtriage auth setup",
+        "org admin to approve it, or create a classic token instead: ghtriage auth setup",
         file=sys.stderr,
     )
 
 
 def _run_pull(args: argparse.Namespace) -> int:
-    repo = resolve_repo(cli_repo=args.repo)
-    token, _ = resolve_token()
+    # One load, shared by both resolutions: config errors raise here, once, and the
+    # loader's unrecognized-key warnings print once.
+    config = load_config()
+    repo = resolve_repo(cli_repo=args.repo, config=config)
+    token = resolve_token(config=config)
     if token is None:
         print(
             "Missing GitHub token. Run `ghtriage auth setup` to set one up.",
@@ -308,9 +333,13 @@ def _format_pull_at(iso_str: str) -> str:
 
 
 def _run_status(args: argparse.Namespace) -> int:
+    # Loaded outside the try: a config the loader rejects must stay loud, or the one
+    # command that reports state would disguise it as an ordinary unset repo.
+    config = load_config()
     try:
-        config_repo: str | None = resolve_repo()
-    except Exception:
+        config_repo: str | None = resolve_repo(config=config)
+    except (RuntimeError, ValueError, OSError):
+        # No usable git remote: for status that is a state to report, not an error.
         config_repo = None
 
     db_path = get_db_path(create=False)
@@ -474,7 +503,7 @@ def _save_pasted_token(ghtriage_dir: Path, repo: str | None, *, classic: bool) -
     return 0
 
 
-def _enable_gh_fallback() -> int:
+def _enable_gh_fallback(ghtriage_dir: Path) -> int:
     config_path = enable_gh_token_fallback()
     print(f"Enabled the gh CLI fallback: [auth] use_gh_token = true in {config_path}.")
 
@@ -485,7 +514,26 @@ def _enable_gh_fallback() -> int:
     else:
         print(f"No token from the gh CLI yet: {result.error}", file=sys.stderr)
         print("The setting is saved; ghtriage will use gh once it can answer.", file=sys.stderr)
+    # The fallback is last in precedence: a user who just chose gh must hear that
+    # another source still wins, or their own setup is misreported back to them.
+    if os.environ.get("GITHUB_TOKEN"):
+        print(
+            "Note: GITHUB_TOKEN is set in this environment and takes precedence over "
+            "the gh fallback."
+        )
+    if (ghtriage_dir / "token").exists():
+        print("Note: .ghtriage/token exists and takes precedence over the gh fallback.")
+    print("Check what ghtriage will use with: ghtriage auth status")
     return 0
+
+
+def _resolve_repo_for_links(config: GhtriageConfig) -> str | None:
+    """The repo the printed links should target, or None for the generic links."""
+    try:
+        return resolve_repo(config=config)
+    except (RuntimeError, ValueError, OSError):
+        # No usable git remote: generic links still work, the instructions cover the rest.
+        return None
 
 
 def _run_auth_setup(args: argparse.Namespace) -> int:
@@ -493,23 +541,23 @@ def _run_auth_setup(args: argparse.Namespace) -> int:
     # the user abandons the prompt below.
     ghtriage_dir = get_ghtriage_dir(create=True)
 
-    try:
-        repo: str | None = resolve_repo()
-    except Exception:
-        repo = None
+    # Loaded on every path, before anything is written: the one command that writes the
+    # config must not be the one that skips reading it, and a config the loader rejects
+    # is refused here with the file left as the user had it.
+    config = load_config()
 
     if args.use_gh_token:
-        return _enable_gh_fallback()
+        return _enable_gh_fallback(ghtriage_dir)
 
     choice = _prompt_auth_choice()
     if choice is None:
         return 1
     if choice == "1":
-        return _save_pasted_token(ghtriage_dir, repo, classic=False)
+        return _save_pasted_token(ghtriage_dir, _resolve_repo_for_links(config), classic=False)
     if choice == "2":
-        return _save_pasted_token(ghtriage_dir, repo, classic=True)
+        return _save_pasted_token(ghtriage_dir, _resolve_repo_for_links(config), classic=True)
     if choice == "3":
-        return _enable_gh_fallback()
+        return _enable_gh_fallback(ghtriage_dir)
 
     print(f"Not one of the choices: {choice}", file=sys.stderr)
     return 1
@@ -536,18 +584,24 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "pull":
-        return _run_pull(args)
-    if args.command == "query":
-        return _run_query(args)
-    if args.command == "schema":
-        return _run_schema(args)
-    if args.command == "status":
-        return _run_status(args)
-    if args.command == "auth":
-        if args.auth_command == "setup":
-            return _run_auth_setup(args)
-        if args.auth_command == "status":
-            return _run_auth_status(args)
+    try:
+        if args.command == "pull":
+            return _run_pull(args)
+        if args.command == "query":
+            return _run_query(args)
+        if args.command == "schema":
+            return _run_schema(args)
+        if args.command == "status":
+            return _run_status(args)
+        if args.command == "auth":
+            if args.auth_command == "setup":
+                return _run_auth_setup(args)
+            if args.auth_command == "status":
+                return _run_auth_status(args)
+    except ConfigError as exc:
+        # The one boundary for a bad config.toml: a hand-edit mistake is user-facing
+        # news, not a traceback. Everything else that raises stays loud.
+        print(exc, file=sys.stderr)
+        return 1
 
     parser.error(f"Unknown command: {args.command}")

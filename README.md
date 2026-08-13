@@ -49,9 +49,9 @@ It offers three methods and makes no network calls of its own:
 Tokens are resolved in the following order, and `ghtriage auth status` shows every source and which one wins:
 
 ```
-GITHUB_TOKEN (env)      not set
-.ghtriage/token         found     <- in use
-gh auth token           disabled  (enable: ghtriage auth setup --use-gh-token)
+GITHUB_TOKEN (env)  not set
+.ghtriage/token     found     <- in use
+gh auth token       disabled  (enable: ghtriage auth setup --use-gh-token)
 ```
 
 Scripts and agents can skip the command entirely: set `GITHUB_TOKEN`, or write the token to `.ghtriage/token` directly.

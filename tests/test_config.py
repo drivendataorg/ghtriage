@@ -4,7 +4,6 @@ import subprocess
 import pytest
 
 from ghtriage.config import (
-    LOCAL_CONFIG_CONTENT,
     enable_gh_token_fallback,
     get_ghtriage_dir,
     gh_cli_token,
@@ -65,9 +64,9 @@ def test_get_ghtriage_dir_scaffolds_config_toml(tmp_path: Path) -> None:
     ghtriage_dir = get_ghtriage_dir(cwd=tmp_path, create=True)
     config_path = ghtriage_dir / "config.toml"
     assert config_path.exists()
-    assert config_path.read_text(encoding="utf-8") == LOCAL_CONFIG_CONTENT
-    assert "repo = " in LOCAL_CONFIG_CONTENT
-    assert "use_gh_token" in LOCAL_CONFIG_CONTENT
+    content = config_path.read_text(encoding="utf-8")
+    assert "repo = " in content
+    assert "use_gh_token" in content
 
 
 def test_scaffolded_config_toml_is_inert(tmp_path: Path, capsys) -> None:
@@ -159,6 +158,14 @@ def test_load_config_raises_on_table_valued_repo(tmp_path: Path, capsys) -> None
     assert "unrecognized" not in capsys.readouterr().err
 
 
+def test_load_config_raises_on_malformed_repo_slug(tmp_path: Path) -> None:
+    ghtriage_dir = get_ghtriage_dir(cwd=tmp_path)
+    (ghtriage_dir / "config.toml").write_text('repo = "not a slug"\n', encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="OWNER/REPO"):
+        load_config(cwd=tmp_path)
+
+
 def test_load_config_raises_on_non_string_repo(tmp_path: Path) -> None:
     ghtriage_dir = get_ghtriage_dir(cwd=tmp_path)
     (ghtriage_dir / "config.toml").write_text("repo = 3\n", encoding="utf-8")
@@ -175,6 +182,18 @@ def test_load_config_raises_on_non_bool_use_gh_token(tmp_path: Path) -> None:
         load_config(cwd=tmp_path)
 
 
+def test_load_config_raises_on_scalar_auth(tmp_path: Path, capsys) -> None:
+    """The mirror of the table-valued repo: a scalar where a table belongs cannot be
+    honored, and calling a recognized name "unrecognized" would be false."""
+    ghtriage_dir = get_ghtriage_dir(cwd=tmp_path)
+    (ghtriage_dir / "config.toml").write_text("auth = true\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="expected a table"):
+        load_config(cwd=tmp_path)
+
+    assert "unrecognized" not in capsys.readouterr().err
+
+
 def test_load_config_raises_on_invalid_toml(tmp_path: Path) -> None:
     ghtriage_dir = get_ghtriage_dir(cwd=tmp_path)
     (ghtriage_dir / "config.toml").write_text("[repo\n", encoding="utf-8")
@@ -187,32 +206,25 @@ def test_resolve_token_prefers_environment_over_token_file(tmp_path: Path) -> No
     ghtriage_dir = get_ghtriage_dir(cwd=tmp_path)
     (ghtriage_dir / "token").write_text("file-token\n", encoding="utf-8")
 
-    token, source = resolve_token(cwd=tmp_path, env={"GITHUB_TOKEN": "env-token"})
-    assert token == "env-token"
-    assert source == "GITHUB_TOKEN (env)"
+    assert resolve_token(cwd=tmp_path, env={"GITHUB_TOKEN": "env-token"}) == "env-token"
 
 
 def test_resolve_token_reads_token_file(tmp_path: Path) -> None:
     ghtriage_dir = get_ghtriage_dir(cwd=tmp_path)
     (ghtriage_dir / "token").write_text("file-token\n", encoding="utf-8")
 
-    token, source = resolve_token(cwd=tmp_path, env={})
-    assert token == "file-token"
-    assert "file" in source
+    assert resolve_token(cwd=tmp_path, env={}) == "file-token"
 
 
 def test_resolve_token_strips_whitespace_from_token_file(tmp_path: Path) -> None:
     ghtriage_dir = get_ghtriage_dir(cwd=tmp_path)
     (ghtriage_dir / "token").write_text("  file-token  \n", encoding="utf-8")
 
-    token, _ = resolve_token(cwd=tmp_path, env={})
-    assert token == "file-token"
+    assert resolve_token(cwd=tmp_path, env={}) == "file-token"
 
 
-def test_resolve_token_returns_not_configured_when_missing(tmp_path: Path) -> None:
-    token, source = resolve_token(cwd=tmp_path, env={})
-    assert token is None
-    assert source == "not configured"
+def test_resolve_token_returns_none_when_missing(tmp_path: Path) -> None:
+    assert resolve_token(cwd=tmp_path, env={}) is None
 
 
 def _fake_gh(monkeypatch: pytest.MonkeyPatch, *, stdout: str = "", returncode: int = 0) -> None:
@@ -243,10 +255,7 @@ def test_resolve_token_ignores_gh_cli_when_fallback_is_disabled(
     get_ghtriage_dir(cwd=tmp_path)
     _fake_gh(monkeypatch, stdout="gh-token\n")
 
-    token, source = resolve_token(cwd=tmp_path, env={})
-
-    assert token is None
-    assert source == "not configured"
+    assert resolve_token(cwd=tmp_path, env={}) is None
 
 
 def test_resolve_token_uses_gh_cli_when_fallback_is_enabled(
@@ -255,10 +264,7 @@ def test_resolve_token_uses_gh_cli_when_fallback_is_enabled(
     _enable_gh_fallback(tmp_path)
     _fake_gh(monkeypatch, stdout="gh-token\n")
 
-    token, source = resolve_token(cwd=tmp_path, env={})
-
-    assert token == "gh-token"
-    assert "gh" in source
+    assert resolve_token(cwd=tmp_path, env={}) == "gh-token"
 
 
 def test_resolve_token_prefers_the_token_file_over_the_gh_cli(
@@ -268,10 +274,22 @@ def test_resolve_token_prefers_the_token_file_over_the_gh_cli(
     (tmp_path / ".ghtriage" / "token").write_text("file-token\n", encoding="utf-8")
     _fake_gh(monkeypatch, stdout="gh-token\n")
 
-    token, source = resolve_token(cwd=tmp_path, env={})
+    assert resolve_token(cwd=tmp_path, env={}) == "file-token"
 
-    assert token == "file-token"
-    assert "file" in source
+
+def test_resolve_token_does_not_spawn_gh_when_an_earlier_source_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The laziness is a contract: pull must not pay a subprocess it does not need."""
+    _enable_gh_fallback(tmp_path)
+    (tmp_path / ".ghtriage" / "token").write_text("file-token\n", encoding="utf-8")
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("gh must not run when an earlier source already won")
+
+    monkeypatch.setattr("ghtriage.config.subprocess.run", explode)
+
+    assert resolve_token(cwd=tmp_path, env={}) == "file-token"
 
 
 def test_resolve_token_prefers_the_environment_over_the_gh_cli(
@@ -280,10 +298,7 @@ def test_resolve_token_prefers_the_environment_over_the_gh_cli(
     _enable_gh_fallback(tmp_path)
     _fake_gh(monkeypatch, stdout="gh-token\n")
 
-    token, source = resolve_token(cwd=tmp_path, env={"GITHUB_TOKEN": "env-token"})
-
-    assert token == "env-token"
-    assert source == "GITHUB_TOKEN (env)"
+    assert resolve_token(cwd=tmp_path, env={"GITHUB_TOKEN": "env-token"}) == "env-token"
 
 
 @pytest.mark.parametrize(
@@ -301,10 +316,7 @@ def test_resolve_token_falls_through_when_the_gh_cli_has_no_token(
     _enable_gh_fallback(tmp_path)
     setup_gh(monkeypatch)
 
-    token, source = resolve_token(cwd=tmp_path, env={})
-
-    assert token is None
-    assert source == "not configured"
+    assert resolve_token(cwd=tmp_path, env={}) is None
 
 
 def test_token_sources_reports_every_source_in_precedence_order(
@@ -366,6 +378,15 @@ def test_gh_cli_token_distinguishes_missing_gh_from_a_logged_out_gh(
     result = gh_cli_token()
     assert result.token == "gh-token"
     assert result.error is None
+
+
+def test_enable_gh_token_fallback_reports_invalid_toml_with_the_path(tmp_path: Path) -> None:
+    """Same friendly wrapper the loader uses; a raw tomlkit frame names neither tool nor file."""
+    ghtriage_dir = get_ghtriage_dir(cwd=tmp_path)
+    (ghtriage_dir / "config.toml").write_text("[auth\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Invalid TOML"):
+        enable_gh_token_fallback(cwd=tmp_path)
 
 
 def test_enable_gh_token_fallback_preserves_comments_and_hand_edits(tmp_path: Path) -> None:
