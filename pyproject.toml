@@ -25,10 +25,17 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-  "ruff",
-  "pytest",
-  "coverage",
-  "pytest-cov",
+    "ruff",
+    { include-group = "tests" },
+    { include-group = "typecheck" },
+]
+tests = [
+    "coverage",
+    "pytest-cov",
+    "pytest",
+]
+typecheck = [
+    "ty",
 ]
 
 ## TOOLS
@@ -51,6 +58,9 @@ unfixable = ["F"]
 [tool.ruff.lint.isort]
 known-first-party = ["ghtriage"]
 force-sort-within-sections = true
+
+[tool.ty.src]
+include = ["src"]
 
 [tool.pytest.ini_options]
 minversion = "6.0"
