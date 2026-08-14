@@ -7,12 +7,13 @@ import subprocess
 import sys
 import textwrap
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - exercised on Python <3.11
+else:
     import tomli as tomllib
 
 import tomlkit
+import tomlkit.exceptions
 
 REPO_SLUG_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LOCAL_GITIGNORE_CONTENT = textwrap.dedent(

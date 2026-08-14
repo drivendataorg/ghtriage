@@ -11,8 +11,8 @@ This project uses uv for Python environment management and Just as a task runner
 
 ## Code quality
 
-- Linting: `just lint` (variadic)
-- Auto-formatting: `just format` (variadic)
+- Linting: `just lint` (variadic, passes through paths)
+- Auto-formatting: `just format` (variadic, passes through paths)
 
 ## Design decisions
 
@@ -43,4 +43,4 @@ minutes. Calibrate defenses to that.
 
 - Use red/green test-driven development
 - Testing uses pytest and goes in [`tests/`](/tests/)
-- Run the test suite with `just test` (variadic)
+- Run the test suite with `just test` (variadic, passes through paths and pytest flags)

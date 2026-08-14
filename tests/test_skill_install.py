@@ -151,6 +151,16 @@ def test_resolve_explicit_directory(tmp_path: Path, home: Path) -> None:
     assert destination == tmp_path / "anywhere" / "ghtriage"
 
 
+@pytest.mark.parametrize("scope", [None, "project", "user"])
+def test_resolve_without_an_agent_or_directory_errors(
+    scope: str | None, tmp_path: Path, home: Path
+) -> None:
+    """`directory` is the only reason an agent may be missing, so every other path is an
+    error rather than a default: the universal directory would be a silent wrong install."""
+    with pytest.raises(SkillInstallError):
+        resolve_destination(agent=None, scope=scope, cwd=tmp_path)
+
+
 def _installed_frontmatter(destination: Path) -> list[str]:
     return _frontmatter_lines((destination / "SKILL.md").read_text(encoding="utf-8"))
 

@@ -9,6 +9,19 @@ from ghtriage.full_text_search import INDEXES, index_schema
 _MAIN_TABLES = ("issues", "pull_requests", "conversation_comments", "review_comments")
 
 
+def _fetch_row(conn: duckdb.DuckDBPyConnection, sql: str) -> tuple:
+    """Run an aggregate that always yields exactly one row, and return it.
+
+    `fetchone()` is typed as optional because a filtered query can return no rows. The
+    callers here aggregate over a whole table, so SQL guarantees a row; saying that once
+    here beats each caller handling a None it cannot receive.
+    """
+    row = conn.execute(sql).fetchone()
+    if row is None:
+        raise RuntimeError(f"Aggregate returned no row: {sql}")  # pragma: no cover
+    return row
+
+
 def _resolve_db_path(cwd: str | Path | None = None) -> Path:
     db_path = get_db_path(cwd=cwd, create=False)
     if not db_path.exists():
@@ -129,7 +142,7 @@ def get_full_text_indexes(cwd: str | Path | None = None) -> list[FullTextIndex]:
                 table=table,
                 key_column=key_column,
                 columns=list(columns),
-                document_count=conn.execute(f"SELECT count(*) FROM github.{table}").fetchone()[0],
+                document_count=_fetch_row(conn, f"SELECT count(*) FROM github.{table}")[0],
             )
             for table, (key_column, columns) in INDEXES.items()
             if index_schema(table) in present
@@ -167,9 +180,7 @@ def get_status_data(cwd: str | Path | None = None) -> StatusData:
         table_stats = []
         for table in _MAIN_TABLES:
             try:
-                row = conn.execute(
-                    f"SELECT COUNT(*), MAX(updated_at) FROM github.{table}"
-                ).fetchone()
+                row = _fetch_row(conn, f"SELECT COUNT(*), MAX(updated_at) FROM github.{table}")
                 count = row[0] or 0
                 max_updated_at = str(row[1])[:19] if row[1] is not None else None
                 table_stats.append((table, count, max_updated_at))
