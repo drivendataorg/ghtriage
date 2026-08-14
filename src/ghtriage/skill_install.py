@@ -16,7 +16,7 @@ SKILL_FILE = "SKILL.md"
 MANAGED_BY_MARKER = "managed-by: ghtriage"
 
 PROJECT_SKILLS_DIRS = {
-    "claude": Path(".claude") / "skills",
+    "claude-code": Path(".claude") / "skills",
     "universal": Path(".agents") / "skills",
 }
 
@@ -24,29 +24,30 @@ PROJECT_SKILLS_DIRS = {
 def _claude_user_skills_dir() -> Path:
     """Where a Claude Code launched from this shell would look for its personal skills."""
     # CLAUDE_CONFIG_DIR relocates Claude Code's whole config directory, personal skills
-    # included, so honoring it before ~/.claude reproduces Claude Code's own lookup rules in
-    # this environment. `gh skill install` hardcodes ~/.claude/skills instead
-    # (cli/cli#13262) -- a known bug, not a convention to copy.
+    # included, so honoring it before ~/.claude reproduces Claude Code's own lookup rules
+    # in this environment.
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
     if config_dir:
         return Path(config_dir) / "skills"
 
     fallback = Path.home() / ".claude" / "skills"
-    relocated = Path.home() / ".config" / "claude" / "skills"
+    relocated = Path.home() / ".config" / "claude"
     if relocated.is_dir():
+        # The config directory, not its skills/ child: a relocated Claude Code that has
+        # never installed a skill has no skills/ yet, and that user needs this note most.
         # A desktop-launched Claude Code can carry CLAUDE_CONFIG_DIR when this shell does
         # not, which is unknowable from here -- so say what was chosen, not what to do.
         print(
             f"Note: installing to {fallback} because CLAUDE_CONFIG_DIR is unset, but "
-            f"{relocated} also exists. If that is the one Claude Code reads, set "
-            "CLAUDE_CONFIG_DIR or pass --dir.",
+            f"{relocated} also exists. If that is the config directory Claude Code uses, "
+            "set CLAUDE_CONFIG_DIR or pass --dir.",
             file=sys.stderr,
         )
     return fallback
 
 
 def _user_skills_dir(agent: str) -> Path:
-    if agent == "claude":
+    if agent == "claude-code":
         return _claude_user_skills_dir()
     return Path.home() / ".agents" / "skills"
 
@@ -85,7 +86,9 @@ def skill_version() -> str:
 
 
 def _skill_source() -> Traversable:
-    return importlib.resources.files("ghtriage") / "skill" / SKILL_NAME
+    # The parent directory must be named `skills`: `gh skill install` discovers only
+    # `skills/*/SKILL.md`-shaped layouts, and the verbatim channel depends on it.
+    return importlib.resources.files("ghtriage") / "skills" / SKILL_NAME
 
 
 def _frontmatter_bounds(lines: list[str]) -> tuple[int, int]:
@@ -108,11 +111,19 @@ def _stamp_version(text: str, version: str) -> str:
     return "\n".join(lines)
 
 
+def _decode_skill_text(data: bytes) -> str:
+    # The wheel carries whatever line endings the build checkout had (a Windows clone
+    # without .gitattributes commits CRLF); the line-based stamper needs LF.
+    return data.decode("utf-8").replace("\r\n", "\n")
+
+
 def _render_skill(version: str) -> dict[str, bytes]:
     """The exact bytes to write, keyed by path relative to the skill directory."""
     files: dict[str, bytes] = {}
     _collect(_skill_source(), "", files)
-    files[SKILL_FILE] = _stamp_version(files[SKILL_FILE].decode("utf-8"), version).encode("utf-8")
+    files[SKILL_FILE] = _stamp_version(_decode_skill_text(files[SKILL_FILE]), version).encode(
+        "utf-8"
+    )
     return files
 
 
@@ -199,7 +210,10 @@ def install_skill(destination: Path, force: bool = False) -> InstallResult:
 
 
 def _write(destination: Path, files: dict[str, bytes]) -> None:
-    for relative_path, content in files.items():
+    # SKILL.md first: an interrupted install then always leaves the managed-by marker
+    # behind, so the next run repairs it through the managed-replace branch instead of
+    # refusing as an unmarked directory.
+    for relative_path in sorted(files, key=lambda p: p != SKILL_FILE):
         path = destination / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
+        path.write_bytes(files[relative_path])

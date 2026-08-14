@@ -988,7 +988,7 @@ def skill_cwd(tmp_path: Path, monkeypatch) -> Path:
 
 
 def test_skill_install_reports_the_destination_and_version(skill_cwd: Path, capsys) -> None:
-    rc = run(["skill", "install", "--agent", "claude"])
+    rc = run(["skill", "install", "--agent", "claude-code"])
 
     out = capsys.readouterr().out
     installed = skill_cwd / ".claude" / "skills" / "ghtriage" / "SKILL.md"
@@ -1020,7 +1020,7 @@ def test_skill_install_replaces_a_managed_skill_and_reports_the_transition(
         encoding="utf-8",
     )
 
-    rc = run(["skill", "install", "--agent", "claude"])
+    rc = run(["skill", "install", "--agent", "claude-code"])
 
     out = capsys.readouterr().out
     assert rc == 0
@@ -1055,7 +1055,7 @@ def test_skill_install_force_replaces_an_unmanaged_destination(skill_cwd: Path, 
 
 
 def test_skill_install_user_scope_targets_the_home_directory(skill_cwd: Path, capsys) -> None:
-    rc = run(["skill", "install", "--agent", "claude", "--scope", "user"])
+    rc = run(["skill", "install", "--agent", "claude-code", "--scope", "user"])
 
     assert rc == 0
     assert (Path.home() / ".claude" / "skills" / "ghtriage" / "SKILL.md").exists()
@@ -1069,7 +1069,7 @@ def test_skill_install_dir_targets_an_arbitrary_path(skill_cwd: Path, tmp_path: 
     assert (tmp_path / "elsewhere" / "ghtriage" / "SKILL.md").exists()
 
 
-@pytest.mark.parametrize("extra", [["--agent", "claude"], ["--scope", "user"]])
+@pytest.mark.parametrize("extra", [["--agent", "claude-code"], ["--scope", "user"]])
 def test_skill_install_dir_excludes_agent_and_scope(
     skill_cwd: Path, tmp_path: Path, extra
 ) -> None:
@@ -1084,7 +1084,7 @@ def test_skill_install_dir_excludes_agent_and_scope(
     [
         ("1", ".claude"),
         ("2", ".agents"),
-        ("claude", ".claude"),
+        ("claude-code", ".claude"),
         ("UNIVERSAL", ".agents"),
     ],
 )
@@ -1098,7 +1098,7 @@ def test_skill_install_prompts_for_the_agent(
     out = capsys.readouterr().out
     assert rc == 0
     assert (skill_cwd / expected / "skills" / "ghtriage" / "SKILL.md").exists()
-    assert "1. claude" in out
+    assert "1. claude-code" in out
     assert "2. universal" in out
 
 
@@ -1135,7 +1135,7 @@ def test_skill_install_reports_an_unwritable_destination(skill_cwd: Path, monkey
         lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("read-only")),
     )
 
-    rc = run(["skill", "install", "--agent", "claude"])
+    rc = run(["skill", "install", "--agent", "claude-code"])
 
     captured = capsys.readouterr()
     assert rc == 1

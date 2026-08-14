@@ -4,9 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from ghtriage.skill_install import SkillInstallError, install_skill, resolve_destination
+from ghtriage.skill_install import (
+    SkillInstallError,
+    _decode_skill_text,
+    _stamp_version,
+    install_skill,
+    resolve_destination,
+)
 
-SOURCE_SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "ghtriage" / "skill" / "ghtriage"
+SOURCE_SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "ghtriage" / "skills" / "ghtriage"
 
 
 def _frontmatter_lines(text: str) -> list[str]:
@@ -50,12 +56,24 @@ def test_source_skill_frontmatter_is_marked_and_unversioned() -> None:
 
 
 def test_skill_files_are_packaged_as_package_data() -> None:
-    """`uv_build` includes non-Python files under the module root -- pinned, not assumed."""
-    packaged = _packaged_tree(importlib.resources.files("ghtriage") / "skill" / "ghtriage")
+    """`uv_build` includes non-Python files under the module root -- pinned, not assumed.
+
+    Under plain `uv run pytest` the install is editable, so importlib.resources resolves
+    to the source tree and this compares it to itself. The test only has teeth under
+    `just test`, which installs the built wheel non-editable -- keep running that.
+    """
+    packaged = _packaged_tree(importlib.resources.files("ghtriage") / "skills" / "ghtriage")
     source = _source_tree()
 
     assert source, "the source skill tree is empty"
     assert packaged == source
+
+
+def test_skill_ships_under_a_directory_named_skills() -> None:
+    """`gh skill install` discovers only `skills/*/SKILL.md` layouts; the parent
+    directory's name is the invariant the verbatim distribution channel depends on."""
+    assert SOURCE_SKILL_DIR.parent.name == "skills"
+    assert (importlib.resources.files("ghtriage") / "skills" / "ghtriage" / "SKILL.md").is_file()
 
 
 @pytest.fixture
@@ -69,7 +87,7 @@ def home(tmp_path: Path, monkeypatch) -> Path:
 
 
 def test_resolve_claude_project_scope(tmp_path: Path, home: Path) -> None:
-    destination = resolve_destination(agent="claude", scope="project", cwd=tmp_path)
+    destination = resolve_destination(agent="claude-code", scope="project", cwd=tmp_path)
 
     assert destination == tmp_path / ".claude" / "skills" / "ghtriage"
 
@@ -93,7 +111,7 @@ def test_resolve_claude_user_scope_honors_claude_config_dir(
     relocated = tmp_path / "relocated"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(relocated))
 
-    destination = resolve_destination(agent="claude", scope="user", cwd=tmp_path)
+    destination = resolve_destination(agent="claude-code", scope="user", cwd=tmp_path)
 
     assert destination == relocated / "skills" / "ghtriage"
     assert capsys.readouterr().err == ""
@@ -102,7 +120,7 @@ def test_resolve_claude_user_scope_honors_claude_config_dir(
 def test_resolve_claude_user_scope_falls_back_to_dot_claude(
     tmp_path: Path, home: Path, capsys
 ) -> None:
-    destination = resolve_destination(agent="claude", scope="user", cwd=tmp_path)
+    destination = resolve_destination(agent="claude-code", scope="user", cwd=tmp_path)
 
     assert destination == home / ".claude" / "skills" / "ghtriage"
     assert capsys.readouterr().err == ""
@@ -112,15 +130,17 @@ def test_resolve_claude_user_scope_notes_a_relocated_looking_config_dir(
     tmp_path: Path, home: Path, capsys
 ) -> None:
     """A desktop-launched Claude Code can carry CLAUDE_CONFIG_DIR when this shell does not,
-    so an existing ~/.config/claude is worth naming -- as a note, not a guess."""
-    (home / ".config" / "claude" / "skills").mkdir(parents=True)
+    so an existing ~/.config/claude is worth naming -- as a note, not a guess. The probe is
+    the config directory itself: a relocated Claude Code that has never installed a skill
+    has no skills/ child yet, and that user needs the note most."""
+    (home / ".config" / "claude").mkdir(parents=True)
 
-    destination = resolve_destination(agent="claude", scope="user", cwd=tmp_path)
+    destination = resolve_destination(agent="claude-code", scope="user", cwd=tmp_path)
 
     err = capsys.readouterr().err
     assert destination == home / ".claude" / "skills" / "ghtriage"
     assert str(home / ".claude" / "skills") in err
-    assert str(home / ".config" / "claude" / "skills") in err
+    assert str(home / ".config" / "claude") in err
     assert "CLAUDE_CONFIG_DIR" in err
     assert "--dir" in err
 
@@ -257,3 +277,53 @@ def test_install_refuses_a_skill_file_without_frontmatter(tmp_path: Path) -> Non
         install_skill(destination)
 
     assert (destination / "SKILL.md").read_text(encoding="utf-8") == "# hand written\n"
+
+
+def test_stamper_handles_crlf_source_bytes() -> None:
+    """A wheel built from a Windows checkout (no .gitattributes, autocrlf) carries CRLF
+    SKILL.md bytes; the line-based stamper must not choke on them."""
+    crlf = (SOURCE_SKILL_DIR / "SKILL.md").read_bytes().replace(b"\n", b"\r\n")
+
+    stamped = _stamp_version(_decode_skill_text(crlf), "1.2.3")
+
+    assert "  version: 1.2.3" in stamped.split("\n")
+
+
+def test_interrupted_install_is_repaired_by_the_next_run(tmp_path: Path, monkeypatch) -> None:
+    """SKILL.md is written first, so a torn install keeps the managed-by marker and the
+    next run replaces it, rather than refusing as an unmarked directory."""
+    destination = tmp_path / "ghtriage"
+    original_write_bytes = Path.write_bytes
+    writes: list[Path] = []
+
+    def failing_write_bytes(self: Path, data: bytes) -> int:
+        writes.append(self)
+        if len(writes) == 2:
+            raise OSError("no space left on device")
+        return original_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", failing_write_bytes)
+    with pytest.raises(OSError):
+        install_skill(destination)
+
+    assert (destination / "SKILL.md").is_file()
+    result = install_skill(destination)
+    assert result.action == "replaced"
+
+
+def test_install_over_a_gh_installed_copy_replaces_it(tmp_path: Path) -> None:
+    """`gh skill install` re-dumps the frontmatter (keys sorted, 4-space indent, an added
+    local-path); the marker must still read as ours or the documented cross-channel
+    upgrade path refuses instead."""
+    destination = tmp_path / "ghtriage"
+    destination.mkdir(parents=True)
+    (destination / "SKILL.md").write_text(
+        "---\ndescription: whatever\nmetadata:\n    local-path: /tmp/gone\n"
+        "    managed-by: ghtriage\nname: ghtriage\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    result = install_skill(destination)
+
+    assert result.action == "replaced"
+    assert result.previous_version is None

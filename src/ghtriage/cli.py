@@ -86,7 +86,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     skill_install_parser.add_argument(
         "--agent",
-        choices=("claude", "universal"),
+        choices=("claude-code", "universal"),
         help="Which agent's skills directory to target; prompts when omitted",
     )
     skill_install_parser.add_argument(
@@ -612,13 +612,13 @@ def _run_auth_status(args: argparse.Namespace) -> int:
 SKILL_AGENT_MENU = """\
 Install the skill for which agent?
 
-  1. claude     -- Claude Code (.claude/skills/)
-  2. universal  -- Copilot, Cursor, Codex, Gemini CLI, and others (.agents/skills/)
+  1. claude-code -- Claude Code (.claude/skills/)
+  2. universal   -- Copilot, Cursor, Codex, Gemini CLI, and others (.agents/skills/)
 """
 
 SKILL_AGENTS = {
-    "1": "claude",
-    "claude": "claude",
+    "1": "claude-code",
+    "claude-code": "claude-code",
     "2": "universal",
     "universal": "universal",
 }

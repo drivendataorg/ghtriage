@@ -294,12 +294,13 @@ and there is no compatibility handling for the pre-rename format.
 
 ### Skill distribution
 
-**The agent skill's source files live inside the package at `src/ghtriage/skill/ghtriage/`, and
+**The agent skill's source files live inside the package at `src/ghtriage/skills/ghtriage/`, and
 the CLI version is stamped into `SKILL.md` at install time rather than authored in source.**
 (2026-08-13, `ghtriage skill install`)
 The same files serve two channels: `gh skill install jayqi/ghtriage` copies them verbatim from a
-pinned git ref, and `ghtriage skill install` copies them out of the installed wheel. Both
-constraints below follow from that.
+git ref, and `ghtriage skill install` copies them out of the installed wheel. Both constraints
+below follow from that. The parent directory must be named `skills` — `gh skill install`
+discovers only `skills/*/SKILL.md`-shaped layouts — and a test pins the name.
 Rejected: keeping the skill at the repository root and force-including it in the wheel. uv_build
 packages only what is under the module root and offers no force-include mechanism, so a root
 `skills/` directory could not ship as package data at all — and package data is the whole point of
