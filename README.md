@@ -30,6 +30,19 @@ uvx --from git+https://github.com/jayqi/ghtriage ghtriage --help
 
 Any tool that installs from a Git URL (`pip`, `pipx`) also works. Requires Python 3.10+.
 
+## Agent skill
+
+ghtriage ships an [Agent Skill](https://agentskills.io/specification) — a `SKILL.md` plus a query cookbook — that teaches a coding agent when to reach for ghtriage and how to query the database. There are two ways to install it:
+
+```bash
+ghtriage skill install             # (preferred) from the CLI you have installed
+gh skill install jayqi/ghtriage    # from the repository, at a git ref you pin
+```
+
+Installing using `ghtriage` will install a compatible version that is bundled with the package. Re-run the command after upgrading ghtriage to upgrade in place, if it was also originally installed by ghtriage. A skill directory it did not install is left alone unless you pass `--force`.
+
+`--agent` says whose skills directory to target: `claude` for Claude Code (`.claude/skills/`), or `universal` for the shared `.agents/skills/` directory that Copilot, Cursor, Codex, Gemini CLI, and others read. It has no default; omit it and the command asks. `--scope` defaults to `project`, which installs into the current directory. `--scope user` installs into your home directory instead, and `--dir PATH` installs to `PATH/ghtriage/` for anything else.
+
 ## Usage
 
 ### Setup
@@ -73,6 +86,7 @@ ghtriage pull [--repo OWNER/REPO] [--full]
 ghtriage status
 ghtriage schema [--table TABLE_NAME]
 ghtriage query "SQL statement" [--format table|csv|json]
+ghtriage skill install [--agent claude|universal] [--scope project|user] [--dir PATH] [--force]
 ```
 
 ### Query formats

@@ -29,6 +29,7 @@ from ghtriage.query import (
     get_table_descriptions,
     get_tables,
 )
+from ghtriage.skill_install import SkillInstallError, install_skill, resolve_destination
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -74,6 +75,34 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the menu and enable the gh CLI fallback (`gh auth token`)",
     )
     auth_subparsers.add_parser("status", help="Show every token source and which one is used")
+
+    skill_parser = subparsers.add_parser("skill", help="Manage the ghtriage agent skill")
+    # metavar, so the missing-subcommand error names the choices, not the dest.
+    skill_subparsers = skill_parser.add_subparsers(
+        dest="skill_command", metavar="{install}", required=True
+    )
+    skill_install_parser = skill_subparsers.add_parser(
+        "install", help="Copy the skill into an agent's skills directory"
+    )
+    skill_install_parser.add_argument(
+        "--agent",
+        choices=("claude", "universal"),
+        help="Which agent's skills directory to target; prompts when omitted",
+    )
+    skill_install_parser.add_argument(
+        "--scope",
+        choices=("project", "user"),
+        help="Install under the current directory (default) or the home directory",
+    )
+    skill_install_parser.add_argument(
+        "--dir",
+        help="Install to DIR/ghtriage/ instead; cannot be combined with --agent or --scope",
+    )
+    skill_install_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace a skill directory ghtriage did not install",
+    )
 
     return parser
 
@@ -580,6 +609,85 @@ def _run_auth_status(args: argparse.Namespace) -> int:
     return 0
 
 
+SKILL_AGENT_MENU = """\
+Install the skill for which agent?
+
+  1. claude     -- Claude Code (.claude/skills/)
+  2. universal  -- Copilot, Cursor, Codex, Gemini CLI, and others (.agents/skills/)
+"""
+
+SKILL_AGENTS = {
+    "1": "claude",
+    "claude": "claude",
+    "2": "universal",
+    "universal": "universal",
+}
+
+
+def _prompt_agent_choice() -> str | None:
+    """The chosen agent, or None when the answer was an abort or not a choice.
+
+    Deliberately unlike the `auth setup` menu in one way: no default, on empty input or at
+    all. There one method is genuinely recommended; here neither value is, because which is
+    right is a fact about the agent the user runs. Guessing it installs into a directory
+    that agent never reads -- silently useless, the worst failure this command has.
+    """
+    print(SKILL_AGENT_MENU)
+    try:
+        choice = input("Choice: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        print("Aborted. Nothing was installed.", file=sys.stderr)
+        return None
+
+    agent = SKILL_AGENTS.get(choice.lower())
+    if agent is None:
+        print(f"Not one of the choices: {choice}", file=sys.stderr)
+    return agent
+
+
+def _display_destination(destination: Path) -> str:
+    try:
+        display: Path | str = destination.relative_to(Path.cwd())
+    except ValueError:
+        display = destination
+    return f"{display}/"
+
+
+def _run_skill_install(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    if args.dir is not None and (args.agent is not None or args.scope is not None):
+        parser.error("--dir cannot be combined with --agent or --scope")
+
+    agent = args.agent
+    if args.dir is None and agent is None:
+        agent = _prompt_agent_choice()
+        if agent is None:
+            return 1
+
+    destination = resolve_destination(
+        agent=agent, scope=args.scope or "project", directory=args.dir
+    )
+    try:
+        result = install_skill(destination, force=args.force)
+    except SkillInstallError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"Could not install the skill to {destination}: {exc}", file=sys.stderr)
+        return 1
+
+    display = _display_destination(result.destination)
+    if result.action == "installed":
+        print(f"Installed skill to {display} (ghtriage {result.version})")
+    elif result.action == "unchanged":
+        print(f"Skill already up to date at {display} ({result.version})")
+    elif result.previous_version and result.previous_version != result.version:
+        print(f"Replaced skill at {display} ({result.previous_version} -> {result.version})")
+    else:
+        print(f"Replaced skill at {display} (ghtriage {result.version})")
+    return 0
+
+
 def run(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -598,6 +706,9 @@ def run(argv: Sequence[str] | None = None) -> int:
                 return _run_auth_setup(args)
             if args.auth_command == "status":
                 return _run_auth_status(args)
+        if args.command == "skill":
+            if args.skill_command == "install":
+                return _run_skill_install(args, parser)
     except ConfigError as exc:
         # The one boundary for a bad config.toml: a hand-edit mistake is user-facing
         # news, not a traceback. Everything else that raises stays loud.
