@@ -1,4 +1,5 @@
 import csv
+import importlib.metadata
 import io
 import json
 import os
@@ -971,3 +972,178 @@ def test_schema_index_example_executes_as_printed(
     number, title, score = results[0]
     assert (number, title) == (1, "First")
     assert score is not None
+
+
+@pytest.fixture
+def skill_cwd(tmp_path: Path, monkeypatch) -> Path:
+    """A project directory with no skill installed and a home directory of our own."""
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    return project
+
+
+def test_skill_install_reports_the_destination_and_version(skill_cwd: Path, capsys) -> None:
+    rc = run(["skill", "install", "--agent", "claude-code"])
+
+    out = capsys.readouterr().out
+    installed = skill_cwd / ".claude" / "skills" / "ghtriage" / "SKILL.md"
+    assert rc == 0
+    assert installed.exists()
+    assert "Installed skill to .claude/skills/ghtriage/" in out
+    assert importlib.metadata.version("ghtriage") in out
+
+
+def test_skill_install_is_idempotent(skill_cwd: Path, capsys) -> None:
+    """The upgrade path is one command, so a re-run must be correct and quiet, not a prompt."""
+    run(["skill", "install", "--agent", "universal"])
+    capsys.readouterr()
+
+    rc = run(["skill", "install", "--agent", "universal"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "already up to date at .agents/skills/ghtriage/" in out
+
+
+def test_skill_install_replaces_a_managed_skill_and_reports_the_transition(
+    skill_cwd: Path, capsys
+) -> None:
+    destination = skill_cwd / ".claude" / "skills" / "ghtriage"
+    destination.mkdir(parents=True)
+    (destination / "SKILL.md").write_text(
+        "---\nname: ghtriage\nmetadata:\n  managed-by: ghtriage\n  version: 0.0.1\n---\n",
+        encoding="utf-8",
+    )
+
+    rc = run(["skill", "install", "--agent", "claude-code"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Replaced skill at .claude/skills/ghtriage/ (0.0.1 -> " in out
+
+
+def test_skill_install_refuses_an_unmanaged_destination(skill_cwd: Path, capsys) -> None:
+    destination = skill_cwd / ".agents" / "skills" / "ghtriage"
+    destination.mkdir(parents=True)
+    (destination / "SKILL.md").write_text("---\nname: ghtriage\n---\nmine\n", encoding="utf-8")
+
+    rc = run(["skill", "install", "--agent", "universal"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    # The refusal's wording and the untouched destination are pinned at the unit level;
+    # this layer owns the exit code and that the message lands on stderr.
+    assert captured.err
+    assert captured.out == ""
+
+
+def test_skill_install_force_replaces_an_unmanaged_destination(skill_cwd: Path, capsys) -> None:
+    destination = skill_cwd / ".agents" / "skills" / "ghtriage"
+    destination.mkdir(parents=True)
+    (destination / "SKILL.md").write_text("---\nname: ghtriage\n---\nmine\n", encoding="utf-8")
+
+    rc = run(["skill", "install", "--agent", "universal", "--force"])
+
+    # Exit 0 alone proves --force reached the installer: without it this destination
+    # refuses with exit 1. Replacement semantics are pinned at the unit level.
+    assert rc == 0
+
+
+def test_skill_install_user_scope_targets_the_home_directory(skill_cwd: Path, capsys) -> None:
+    rc = run(["skill", "install", "--agent", "claude-code", "--scope", "user"])
+
+    assert rc == 0
+    assert (Path.home() / ".claude" / "skills" / "ghtriage" / "SKILL.md").exists()
+    assert not (skill_cwd / ".claude").exists()
+
+
+def test_skill_install_dir_targets_an_arbitrary_path(skill_cwd: Path, tmp_path: Path) -> None:
+    rc = run(["skill", "install", "--dir", str(tmp_path / "elsewhere")])
+
+    assert rc == 0
+    assert (tmp_path / "elsewhere" / "ghtriage" / "SKILL.md").exists()
+
+
+@pytest.mark.parametrize("extra", [["--agent", "claude-code"], ["--scope", "user"]])
+def test_skill_install_dir_excludes_agent_and_scope(
+    skill_cwd: Path, tmp_path: Path, extra
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        run(["skill", "install", "--dir", str(tmp_path / "elsewhere"), *extra])
+    assert exc_info.value.code == 2
+    assert not (tmp_path / "elsewhere").exists()
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        ("1", ".claude"),
+        ("2", ".agents"),
+        ("claude-code", ".claude"),
+        ("UNIVERSAL", ".agents"),
+    ],
+)
+def test_skill_install_prompts_for_the_agent(
+    skill_cwd: Path, monkeypatch, capsys, answer: str, expected: str
+) -> None:
+    monkeypatch.setattr("builtins.input", lambda _prompt="": answer)
+
+    rc = run(["skill", "install"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert (skill_cwd / expected / "skills" / "ghtriage" / "SKILL.md").exists()
+    assert "1. claude-code" in out
+    assert "2. universal" in out
+
+
+@pytest.mark.parametrize("answer", ["yes", ""])
+def test_skill_install_rejects_an_unrecognized_answer(
+    skill_cwd: Path, monkeypatch, capsys, answer: str
+) -> None:
+    """No default on empty input, unlike the auth menu: no agent is recommendable."""
+    monkeypatch.setattr("builtins.input", lambda _prompt="": answer)
+
+    rc = run(["skill", "install"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "Not one of the choices" in captured.err
+    assert list(skill_cwd.iterdir()) == []
+
+
+def test_skill_install_aborts_on_non_interactive_stdin(skill_cwd: Path, monkeypatch, capsys):
+    """Scripts and CI reach the prompt too; EOF is the clean exit, not a guessed default."""
+    monkeypatch.setattr("builtins.input", lambda _prompt="": (_ for _ in ()).throw(EOFError()))
+
+    rc = run(["skill", "install"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "Aborted. Nothing was installed." in captured.err
+    assert list(skill_cwd.iterdir()) == []
+
+
+def test_skill_install_reports_an_unwritable_destination(skill_cwd: Path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "ghtriage.cli.install_skill",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("read-only")),
+    )
+
+    rc = run(["skill", "install", "--agent", "claude-code"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "read-only" in captured.err
+
+
+def test_skill_requires_a_subcommand(skill_cwd: Path, capsys) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        run(["skill"])
+    assert exc_info.value.code == 2
+    assert "{install}" in capsys.readouterr().err

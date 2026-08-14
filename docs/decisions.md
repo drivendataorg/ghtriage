@@ -9,6 +9,12 @@ An entry earns its place when both are true: a future reader might reasonably un
 without knowing why it was made, and there is no single code site where the reasoning would fit.
 If a comment beside the line (or a column doc) would reach that reader, write that instead.
 
+A decision, for this file, is a choice made against a concrete alternative — one someone would
+plausibly implement without the entry, with evidence for why it lost. Current scope is not a
+decision: the set of supported values, formats, or targets is self-evident from the code, and
+extending it later is addition, not reversal, so it earns no entry however deliberate today's
+boundary was. If you cannot name the rejected alternative, there is no entry to write.
+
 Entries are chronological and self-contained: a short heading (kept stable — cross-references
 link to it), one bold sentence stating the decision with its date and originating issue, then each
 rejected alternative and why it lost, with the key evidence inline.
@@ -285,3 +291,27 @@ targets the wrong repository with no signal. Unknown keys and tables warn on std
 raise, since a value that cannot be honored deserves louder than a warning — a leftover old-style
 `[repo]` table is deliberately this case, not a warning: it is a table where a string belongs,
 and there is no compatibility handling for the pre-rename format.
+
+### Skill distribution
+
+**The agent skill's source files live inside the package at `src/ghtriage/skills/ghtriage/`, and
+the CLI version is stamped into `SKILL.md` at install time rather than authored in source.**
+(2026-08-13, `ghtriage skill install`)
+The same files serve two channels: `gh skill install jayqi/ghtriage` copies them verbatim from a
+git ref, and `ghtriage skill install` copies them out of the installed wheel. Both constraints
+below follow from that. The parent directory must be named `skills` — `gh skill install`
+discovers only `skills/*/SKILL.md`-shaped layouts — and a test pins the name.
+Rejected: keeping the skill at the repository root and force-including it in the wheel. uv_build
+packages only what is under the module root and offers no force-include mechanism, so a root
+`skills/` directory could not ship as package data at all — and package data is the whole point of
+the second channel, which exists to guarantee the installed skill describes the installed CLI.
+Rejected: publishing the skill as its own PyPI package. A second versioned artifact to release in
+lockstep, to buy separation the wheel already provides for free.
+Rejected: writing `version:` into the source frontmatter. The verbatim channel would ship whatever
+value was committed, so it would go stale on every release that did not touch the file, and
+uv_build has no build hooks to template it at build time. The absent `version:` key in the source
+`SKILL.md` therefore looks like an omission and is not; `tests/test_skill_install.py` pins the
+frontmatter's shape, because the installer inserts the line by hand.
+Rejected: stamping via a YAML round-trip instead of a line insert. The frontmatter is
+hand-written, with a folded `description` block that a YAML dumper would reflow, and the file is
+under our control with a test on its shape — the dependency and the churn buy nothing.
