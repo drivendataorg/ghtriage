@@ -282,7 +282,10 @@ def test_install_refuses_a_skill_file_without_frontmatter(tmp_path: Path) -> Non
 def test_stamper_handles_crlf_source_bytes() -> None:
     """A wheel built from a Windows checkout (no .gitattributes, autocrlf) carries CRLF
     SKILL.md bytes; the line-based stamper must not choke on them."""
-    crlf = (SOURCE_SKILL_DIR / "SKILL.md").read_bytes().replace(b"\n", b"\r\n")
+    # Canonicalize to LF first: on a CRLF checkout (Windows CI) the raw bytes already
+    # carry \r\n, and a bare \n -> \r\n replacement would manufacture \r\r\n.
+    source = (SOURCE_SKILL_DIR / "SKILL.md").read_bytes().replace(b"\r\n", b"\n")
+    crlf = source.replace(b"\n", b"\r\n")
 
     stamped = _stamp_version(_decode_skill_text(crlf), "1.2.3")
 

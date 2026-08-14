@@ -648,10 +648,12 @@ def _prompt_agent_choice() -> str | None:
 
 def _display_destination(destination: Path) -> str:
     try:
-        display: Path | str = destination.relative_to(Path.cwd())
+        display = destination.relative_to(Path.cwd())
     except ValueError:
         display = destination
-    return f"{display}/"
+    # Forward slashes on every platform: skill paths appear that way throughout the docs,
+    # and a native-separator render would end `.claude\skills\ghtriage/` -- mixed.
+    return f"{display.as_posix()}/"
 
 
 def _run_skill_install(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:

@@ -39,7 +39,7 @@ ghtriage skill install                      # (preferred) from the CLI you have 
 gh skill install jayqi/ghtriage ghtriage    # from the repository (pin a ref with --pin)
 ```
 
-Installing using `ghtriage` will install a compatible version that is bundled with the package. Re-run the command after upgrading ghtriage to upgrade in place. A skill directory without a `managed-by: ghtriage`marker is left alone unless you pass `--force`.
+Installing using `ghtriage` will install a compatible version that is bundled with the package. Re-run the command after upgrading ghtriage to upgrade in place. A skill directory without a `managed-by: ghtriage` marker is left alone unless you pass `--force`.
 
 `--agent` says whose skills directory to target: `claude-code` for Claude Code (`.claude/skills/`), or `universal` for the shared `.agents/skills/` directory that Copilot, Cursor, Codex, Gemini CLI, and others read. It has no default; omit it and the command asks. `--scope` defaults to `project`, which installs into the current directory. `--scope user` installs into your home directory instead, and `--dir PATH` installs to `PATH/ghtriage/` for anything else.
 
