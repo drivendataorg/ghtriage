@@ -7,9 +7,9 @@ import subprocess
 import sys
 import textwrap
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - exercised on Python <3.11
+else:
     import tomli as tomllib
 
 import tomlkit

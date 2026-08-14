@@ -373,6 +373,14 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+tests = [
+    { name = "coverage" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
+typecheck = [
+    { name = "ty" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -390,6 +398,12 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+tests = [
+    { name = "coverage" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+]
+typecheck = [{ name = "ty" }]
 
 [[package]]
 name = "gitdb"

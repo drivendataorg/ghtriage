@@ -6,9 +6,9 @@ from pathlib import Path
 import shutil
 import sys
 
-try:
+if sys.version_info >= (3, 11):
     from importlib.resources.abc import Traversable
-except ModuleNotFoundError:  # pragma: no cover - exercised on Python <3.11
+else:
     from importlib.abc import Traversable
 
 SKILL_NAME = "ghtriage"
