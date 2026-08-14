@@ -130,6 +130,6 @@ read [references/query-cookbook.md](references/query-cookbook.md).
 
 ## If ghtriage is not installed
 
-Install it as a tool (`uv tool install git+https://github.com/jayqi/ghtriage`)
+Install it as a tool (`uv tool install git+https://github.com/drivendataorg/ghtriage`)
 or run it without installing:
-`uvx --from git+https://github.com/jayqi/ghtriage ghtriage --help`.
+`uvx --from git+https://github.com/drivendataorg/ghtriage ghtriage --help`.

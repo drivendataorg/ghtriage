@@ -19,13 +19,13 @@ ghtriage deliberately provides data and access, not judgments. It pre-computes f
 ghtriage is not yet published to PyPI. Install it as a CLI tool from GitHub with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install git+https://github.com/jayqi/ghtriage
+uv tool install git+https://github.com/drivendataorg/ghtriage
 ```
 
 Or run it without installing:
 
 ```bash
-uvx --from git+https://github.com/jayqi/ghtriage ghtriage --help
+uvx --from git+https://github.com/drivendataorg/ghtriage ghtriage --help
 ```
 
 Any tool that installs from a Git URL (`pip`, `pipx`) also works. Requires Python 3.10+.
@@ -35,8 +35,8 @@ Any tool that installs from a Git URL (`pip`, `pipx`) also works. Requires Pytho
 ghtriage ships an [Agent Skill](https://agentskills.io/specification) — a `SKILL.md` plus a query cookbook — that teaches a coding agent when to reach for ghtriage and how to query the database. There are two ways to install it:
 
 ```bash
-ghtriage skill install                      # (preferred) from the CLI you have installed
-gh skill install jayqi/ghtriage ghtriage    # from the repository (pin a ref with --pin)
+ghtriage skill install                              # [recommended] from the CLI you have installed
+gh skill install drivendataorg/ghtriage ghtriage    # from the repository (pin a ref with --pin)
 ```
 
 Installing using `ghtriage` will install a compatible version that is bundled with the package. Re-run the command after upgrading ghtriage to upgrade in place. A skill directory without a `managed-by: ghtriage` marker is left alone unless you pass `--force`.

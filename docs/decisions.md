@@ -36,8 +36,8 @@ old one — its reasoning is the record of why the code once looked the way it d
 
 **Pull request conversation comments and review comments are counted separately; the thread
 search corpus folds them together.** (2026-08-06,
-[#11](https://github.com/jayqi/ghtriage/issues/11); 2026-08-07,
-[#13](https://github.com/jayqi/ghtriage/issues/13))
+[#11](https://github.com/drivendataorg/ghtriage/issues/11); 2026-08-07,
+[#13](https://github.com/drivendataorg/ghtriage/issues/13))
 Rejected: a single combined comment count. GitHub's `/issues/comments` endpoint returns PR
 conversation comments and `/pulls/comments` returns only inline review comments; in the sample
 repository, 61% of pull requests had conversation comments and no review comments at all, so a
@@ -49,7 +49,7 @@ just wants all the words.
 ### Bot counts
 
 **Split counts carry the total under the unqualified name, with a `non_bot_` companion.**
-(2026-08-06, [#11](https://github.com/jayqi/ghtriage/issues/11))
+(2026-08-06, [#11](https://github.com/drivendataorg/ghtriage/issues/11))
 Rejected: making `comment_count` mean the non-bot count. `issues.comments` is GitHub's own total
 sitting in the raw table under a near-identical name, and excluding bots from the unqualified
 name is itself the judgment the project avoids. The companion counts non-bots rather than bots
@@ -59,7 +59,7 @@ arithmetic.
 ### No AI-identification column
 
 **There is no AI-identification column; `author_type` is as far as the data supports.**
-(2026-08-06, [#11](https://github.com/jayqi/ghtriage/issues/11))
+(2026-08-06, [#11](https://github.com/drivendataorg/ghtriage/issues/11))
 Rejected: a curated list of agent logins. GitHub distinguishes `Bot` from `User`, not AI from
 CI — `github-actions[bot]` and `Copilot` are both `Bot`, and machine accounts that are not
 GitHub Apps are typed `User`. Separating them needs a maintained, repo-specific list, which goes
@@ -69,7 +69,7 @@ the database.
 ### Views, not tables
 
 **The activity views are views, not materialized tables.** (2026-08-06,
-[#11](https://github.com/jayqi/ghtriage/issues/11))
+[#11](https://github.com/drivendataorg/ghtriage/issues/11))
 Rejected: `CREATE TABLE AS`, which would need invalidating whenever a pull changed the
 underlying data. Scanning both views fully took 38 ms on the sample repository.
 [Thread tables](#thread-tables) is the one place this is deliberately reversed.
@@ -78,7 +78,7 @@ underlying data. Scanning both views fully took 38 ms on the sample repository.
 
 **Derived objects degrade to typed NULLs and empty relations when optional upstream data is
 absent, via one declaration-driven padding combinator applied to every source a derived object
-reads — base tables included.** (2026-08-06, [#11](https://github.com/jayqi/ghtriage/issues/11);
+reads — base tables included.** (2026-08-06, [#11](https://github.com/drivendataorg/ghtriage/issues/11);
 mechanism simplified 2026-08-08)
 Rejected: skipping creation whenever anything is missing. dlt only creates a column or child
 table once a record carrying that field arrives, so a young or sparse repository is missing
@@ -93,7 +93,7 @@ non-event without probing.
 ### SQL templates and column docs
 
 **Derived objects are plain SQL templates with format slots; column docs live in a separate
-dict.** (2026-08-06, [#11](https://github.com/jayqi/ghtriage/issues/11))
+dict.** (2026-08-06, [#11](https://github.com/drivendataorg/ghtriage/issues/11))
 Rejected: a record-per-column composition layer colocating SQL and docs. Colocation does not
 actually enforce anything — an edited expression can leave an adjacent doc stale just as easily.
 `test_view_docs_match_view_columns` pins the enforceable half — every column has exactly one doc
@@ -104,7 +104,7 @@ once.
 ### Table naming
 
 **Tables are named for the domain (`pull_requests`, `conversation_comments`), not for GitHub's
-REST paths.** (2026-08-06, [#11](https://github.com/jayqi/ghtriage/issues/11))
+REST paths.** (2026-08-06, [#11](https://github.com/drivendataorg/ghtriage/issues/11))
 Rejected: mirroring the endpoint names (`pulls`, `issue_comments`, `pull_comments`). `pulls`
 collided with the `ghtriage pull` command, and `issue_comments` actively misleads: it holds
 conversation comments on issues *and* pull requests. The dlt resource `name` and `endpoint.path`
@@ -115,7 +115,7 @@ nothing else in the schema is abbreviated.
 
 **GitHub's `id` is the full-text document key, not dlt's `_dlt_id`, and its uniqueness is pinned
 by a test on the source declaration, not a runtime check.** (2026-08-07,
-[#13](https://github.com/jayqi/ghtriage/issues/13); runtime check removed 2026-08-08)
+[#13](https://github.com/drivendataorg/ghtriage/issues/13); runtime check removed 2026-08-08)
 Rejected: `_dlt_id`, which #13 proposed as the natural key. dlt assigns it at extract time
 rather than deriving it from content, so an edited row's `_dlt_id` changes on the pull that
 picks the edit up — no good as a handle that outlives a pull. `id` is GitHub's permanent
@@ -129,7 +129,7 @@ declaration: the layer that provides the guarantee is the layer that gets the te
 ### Thread tables
 
 **Thread tables are materialized tables, not views.** (2026-08-07,
-[#13](https://github.com/jayqi/ghtriage/issues/13))
+[#13](https://github.com/drivendataorg/ghtriage/issues/13))
 Rejected: views, per [Views, not tables](#views-not-tables). That entry rejected materialization
 for the invalidation cost; here it is already paid: DuckDB cannot index a view at all, and an
 FTS index has no incremental update — it is rebuilt from scratch on every pull regardless — so
@@ -138,7 +138,7 @@ the table is rebuilt in the same step for 5–13 ms.
 ### Stopwords and tokenization
 
 **The default `ignore` pattern is kept (digits are not searchable); the stopword list is not
-(`stopwords='none'`).** (2026-08-07, [#13](https://github.com/jayqi/ghtriage/issues/13))
+(`stopwords='none'`).** (2026-08-07, [#13](https://github.com/drivendataorg/ghtriage/issues/13))
 Rejected: an `ignore` pattern that keeps digits (`'(\.|[^a-z0-9])+'`), which makes `404`
 findable but stops `python` matching `python3.11` — it tokenizes as `python3` + `11`. Exact
 codes and versions are what `LIKE` and `regexp_matches` already do well; full-text search
@@ -157,7 +157,7 @@ maintained judgment of the kind this project avoids (see
 ### No search command
 
 **There is no `search` subcommand and no SQL macro wrapper.** (2026-08-07,
-[#13](https://github.com/jayqi/ghtriage/issues/13))
+[#13](https://github.com/drivendataorg/ghtriage/issues/13))
 Rejected: a `search_issues(q)` table macro. It works and composes with `WHERE`, but macros are
 invisible to `information_schema.tables` and reject `COMMENT ON`, so the schema-transparency
 mechanism the rest of the project relies on cannot document them. The raw syntax is surfaced
@@ -167,7 +167,7 @@ through `ghtriage schema` instead.
 
 **Every step after the load is attempted, reported, and survived; `run_pull` owns that policy,
 and no step leaves behind an object it could not rebuild this pull.** (2026-08-08, follow-up to
-[#13](https://github.com/jayqi/ghtriage/issues/13))
+[#13](https://github.com/drivendataorg/ghtriage/issues/13))
 Rejected: each builder guarding itself. A module swallowing its own failures is deciding what a
 pull is worth, which is the orchestrator's call. The builders raise, or return a message for any
 single object they could not build; `run_pull` collects both and exits 0, because the raw tables
@@ -188,7 +188,7 @@ one known, cheap command from clean.
 
 **All six full-text indexes stay: the base title/body indexes are not subsumed by the thread
 indexes.** (2026-08-10, post-review follow-up to
-[#13](https://github.com/jayqi/ghtriage/issues/13))
+[#13](https://github.com/drivendataorg/ghtriage/issues/13))
 Rejected: dropping `fts_github_issues` and `fts_github_pull_requests` as redundant with the
 thread indexes. A thread document mixes what an issue is *about* with everything ever said in
 it — pasted stack traces, tangents, cross-references — so BM25 over threads answers "was this
@@ -207,7 +207,7 @@ index. The README documents which corpus answers which question.
 **Child tables carry their parent's GitHub key — `issues__labels.issue_number` joins to
 `issues.number` — and that is the documented join; the `_dlt_*` columns stay in the database
 as plumbing and are hidden from `ghtriage schema`.** (2026-08-12,
-[#15](https://github.com/jayqi/ghtriage/issues/15))
+[#15](https://github.com/drivendataorg/ghtriage/issues/15))
 Rejected: documenting `_dlt_parent_id = _dlt_id` as the child-table join. It publishes loader
 bookkeeping as API — the same objection that made GitHub's `id` the full-text document key (see
 [Full-text document key](#full-text-document-key)) — and a reader who joins on it learns nothing
@@ -236,7 +236,7 @@ propagated key is the documented surface; the views are plumbing and may join on
 
 **A single integer stamped into `_ghtriage_meta` is compared before every incremental pull; any
 mismatch refuses the pull, before the load, and points at `ghtriage pull --full`.** (2026-08-12,
-[#15](https://github.com/jayqi/ghtriage/issues/15))
+[#15](https://github.com/drivendataorg/ghtriage/issues/15))
 Rejected: backfilling the propagated columns with an `UPDATE` from the `_dlt_` link. It works
 once, and then every future shape change needs its own backfill; the database is a disposable
 cache that `pull --full` rebuilds in minutes, so the state is worth making unreachable rather
@@ -297,7 +297,7 @@ and there is no compatibility handling for the pre-rename format.
 **The agent skill's source files live inside the package at `src/ghtriage/skills/ghtriage/`, and
 the CLI version is stamped into `SKILL.md` at install time rather than authored in source.**
 (2026-08-13, `ghtriage skill install`)
-The same files serve two channels: `gh skill install jayqi/ghtriage` copies them verbatim from a
+The same files serve two channels: `gh skill install drivendataorg/ghtriage` copies them verbatim from a
 git ref, and `ghtriage skill install` copies them out of the installed wheel. Both constraints
 below follow from that. The parent directory must be named `skills` — `gh skill install`
 discovers only `skills/*/SKILL.md`-shaped layouts — and a test pins the name.
