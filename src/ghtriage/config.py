@@ -13,6 +13,7 @@ else:
     import tomli as tomllib
 
 import tomlkit
+import tomlkit.exceptions
 
 REPO_SLUG_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LOCAL_GITIGNORE_CONTENT = textwrap.dedent(

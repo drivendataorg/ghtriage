@@ -61,6 +61,11 @@ def resolve_destination(
     """The skill directory to install into. `directory` is the escape hatch and wins."""
     if directory is not None:
         return Path(directory) / SKILL_NAME
+    if agent is None:
+        # The CLI only leaves this unset alongside `directory`, which returned above.
+        # Failing here keeps a leaked None from quietly resolving to the universal
+        # directory, which is a wrong install location rather than an error.
+        raise SkillInstallError("An agent is required to resolve a skill directory.")
     if scope == "user":
         return _user_skills_dir(agent) / SKILL_NAME
     root = Path(cwd) if cwd is not None else Path.cwd()

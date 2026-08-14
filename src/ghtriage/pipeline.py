@@ -5,7 +5,7 @@ from typing import Any
 
 import dlt
 from dlt.common.normalizers.json.relational import DataItemNormalizer
-from dlt.sources.rest_api import rest_api_source
+from dlt.sources.rest_api import RESTAPIConfig, rest_api_source
 import duckdb
 
 from ghtriage.annotations import annotate_propagated_keys, fetch_and_annotate
@@ -59,7 +59,7 @@ def build_rest_api_source(repo: str, token: str):
     owner, name = _split_repo(repo)
     base_url = f"https://api.github.com/repos/{owner}/{name}/"
 
-    source_config = {
+    source_config: RESTAPIConfig = {
         "client": {
             "base_url": base_url,
             "auth": {"token": token},
@@ -140,9 +140,11 @@ def build_rest_api_source(repo: str, token: str):
         ],
     }
     source = rest_api_source(source_config)
-    # Copied because dlt normalizes the identifiers in place.
+    # Copied because dlt normalizes the identifiers in place. dlt types the identifiers as
+    # a NewType over str, which a plain dict literal cannot satisfy.
     DataItemNormalizer.update_normalizer_config(
-        source.schema, {"propagation": {"tables": dict(KEY_PROPAGATION)}}
+        source.schema,
+        {"propagation": {"tables": dict(KEY_PROPAGATION)}},  # ty: ignore[invalid-argument-type]
     )
     return source
 
