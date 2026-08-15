@@ -32,7 +32,7 @@ jobs:
       - name: Check that versions match
         run: |
           echo "Input version tag: [${INPUTS_VERSION}] "
-          PACKAGE_VERSION=$(uv run --no-project --only-group vspect -m vspect read .)
+          PACKAGE_VERSION=$(uv run --only-group vspect -m vspect read .)
           echo "Package version: [$PACKAGE_VERSION]"
           [[ ${INPUTS_VERSION} == "v$PACKAGE_VERSION" ]] || exit 1
         env:
@@ -99,6 +99,7 @@ jobs:
   create-github-release:
     name: Create GitHub release
     needs: upload-to-prod-pypi
+    if: ${{ !cancelled() && needs.upload-to-prod-pypi.result != 'failure' }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
