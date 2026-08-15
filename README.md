@@ -16,19 +16,19 @@ ghtriage deliberately provides data and access, not judgments. It pre-computes f
 
 ## Installation
 
-ghtriage is not yet published to PyPI. Install it as a CLI tool from GitHub with [uv](https://docs.astral.sh/uv/):
+Install ghtriage as a CLI tool with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install git+https://github.com/drivendataorg/ghtriage
+uv tool install ghtriage
 ```
 
 Or run it without installing:
 
 ```bash
-uvx --from git+https://github.com/drivendataorg/ghtriage ghtriage --help
+uvx ghtriage --help
 ```
 
-Any tool that installs from a Git URL (`pip`, `pipx`) also works. Requires Python 3.10+.
+Any tool that installs from PyPI (`pip`, `pipx`) also works. Requires Python 3.10+.
 
 ## Agent skill
 
