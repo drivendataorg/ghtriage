@@ -66,14 +66,14 @@ jobs:
         env:
           STEPS_EXTRACT_CHANGELOG_OUTPUTS_MARKDOWN: ${{ steps.extract-changelog.outputs.markdown }}
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: changelog-extracted
           path: __CHANGELOG-extracted.md
 
   build-and-inspect-package:
     name: Build and inspect package
-    needs: check-version
+    needs: [check-version, extract-changelog]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -131,8 +131,10 @@ jobs:
 
   create-github-release:
     name: Create GitHub release
-    needs: upload-to-prod-pypi
-    if: ${{ !cancelled() && needs.upload-to-prod-pypi.result != 'failure' }}
+    needs: [upload-to-test-pypi, upload-to-prod-pypi]
+    if: ${{ !cancelled()
+            && needs.upload-to-test-pypi.result == 'success'
+            && needs.upload-to-prod-pypi.result != 'failure' }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
