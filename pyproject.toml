@@ -26,6 +26,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "ruff",
+    "vspect",
     { include-group = "tests" },
     { include-group = "typecheck" },
 ]
