@@ -27,12 +27,12 @@ jobs:
 
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          cache-suffix: "dev"
+          cache-suffix: "release"
 
       - name: Check that versions match
         run: |
           echo "Input version tag: [${INPUTS_VERSION}] "
-          PACKAGE_VERSION=$(uv run python -m vspect read .)
+          PACKAGE_VERSION=$(uv run --no-project --only-group vspect -m vspect read .)
           echo "Package version: [$PACKAGE_VERSION]"
           [[ ${INPUTS_VERSION} == "v$PACKAGE_VERSION" ]] || exit 1
         env:
@@ -120,6 +120,7 @@ jobs:
         with:
           file: CHANGELOG.md
           pattern: ${{ inputs.version }}
+          no-print-matched-heading: true
 
       - name: Write output to file
         run: |

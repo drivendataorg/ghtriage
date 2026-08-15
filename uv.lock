@@ -372,7 +372,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "ty" },
-    { name = "vspect" },
     { name = "zizmor" },
 ]
 tests = [
@@ -382,6 +381,9 @@ tests = [
 ]
 typecheck = [
     { name = "ty" },
+]
+vspect = [
+    { name = "vspect" },
 ]
 
 [package.metadata]
@@ -399,7 +401,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "ty" },
-    { name = "vspect" },
     { name = "zizmor" },
 ]
 tests = [
@@ -408,6 +409,7 @@ tests = [
     { name = "pytest-cov" },
 ]
 typecheck = [{ name = "ty" }]
+vspect = [{ name = "vspect" }]
 
 [[package]]
 name = "gitdb"
