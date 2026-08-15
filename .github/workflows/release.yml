@@ -17,6 +17,8 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+permissions: {}
+
 jobs:
   check-version:
     name: Check metadata version is correct
@@ -173,5 +175,6 @@ jobs:
             ./dist/*.whl \
             ./dist/*.tar.gz
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUTS_VERSION: ${{ inputs.version }}
