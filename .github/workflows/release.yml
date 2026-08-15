@@ -61,7 +61,6 @@ jobs:
   upload-to-test-pypi:
     name: Upload package to Test PyPI
     needs: build-and-inspect-package
-    if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -100,7 +99,6 @@ jobs:
   create-github-release:
     name: Create GitHub release
     needs: upload-to-prod-pypi
-    if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -129,7 +127,18 @@ jobs:
         env:
           STEPS_EXTRACT_CHANGELOG_OUTPUTS_MARKDOWN: ${{ steps.extract-changelog.outputs.markdown }}
 
+      - name: Print diagnostics
+        if: ${{ inputs.dry-run }}
+        run: |
+          echo "${INPUTS_VERSION}"
+          ls ./dist
+          echo "${GITHUB_SHA}"
+          cat __CHANGELOG-extracted.md
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+
       - name: Create release
+        if: ${{ !inputs.dry-run }}
         run: |
           gh release create "${INPUTS_VERSION}" \
             --target "${GITHUB_SHA}" \
