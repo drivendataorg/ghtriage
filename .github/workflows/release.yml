@@ -75,7 +75,6 @@ jobs:
     name: Build and inspect package
     needs: [check-version, extract-changelog]
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: read
       # Need both of these for attest-build-provenance-github
@@ -95,7 +94,7 @@ jobs:
     name: Upload package to Test PyPI
     needs: build-and-inspect-package
     runs-on: ubuntu-latest
-    environment: release
+    environment: release  # Required for PyPI trusted publishing
     permissions:
       id-token: write  # Required for PyPI trusted publishing
 
@@ -116,7 +115,7 @@ jobs:
     needs: upload-to-test-pypi
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
-    environment: release
+    environment: release  # Required for PyPI trusted publishing
     permissions:
       id-token: write  # Required for PyPI trusted publishing
 
@@ -136,7 +135,6 @@ jobs:
             && needs.upload-to-test-pypi.result == 'success'
             && needs.upload-to-prod-pypi.result != 'failure' }}
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
 
