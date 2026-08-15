@@ -28,3 +28,15 @@ jobs:
       - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
         with:
           advanced-security: false
+
+  notify:
+    name: Notify failed build
+    needs: [zizmor]
+    if: failure() && (github.event_name == 'push' || github.event_name == 'schedule')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: jayqi/failed-build-issue-action@1a893bbf43ef1c2a8705e2b115cd4f0fe3c5649b # v1.2.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
