@@ -20,6 +20,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@v9.0.0
         with:
@@ -30,10 +32,12 @@ jobs:
 
       - name: Check that versions match
         run: |
-          echo "Input version tag: [${{ github.event.inputs.version }}] "
+          echo "Input version tag: [${GITHUB_EVENT_INPUTS_VERSION}] "
           PACKAGE_VERSION=$(uv run python -m vspect read .)
           echo "Package version: [$PACKAGE_VERSION]"
-          [[ ${{ github.event.inputs.version }} == "v$PACKAGE_VERSION" ]] || { exit 1; }
+          [[ ${GITHUB_EVENT_INPUTS_VERSION} == "v$PACKAGE_VERSION" ]] || { exit 1; }
+        env:
+          GITHUB_EVENT_INPUTS_VERSION: ${{ github.event.inputs.version }}
 
   build-and-inspect-package:
     name: Build and inspect package
@@ -47,6 +51,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: hynek/build-and-inspect-python-package@v3.0.1
         with:
@@ -101,6 +107,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Download built artifact to dist/
         uses: actions/download-artifact@v8.0.1
@@ -117,8 +125,10 @@ jobs:
       - name: Write output to file
         run: |
           cat <<'__EOF__' > __CHANGELOG-extracted.md
-          ${{ steps.extract-changelog.outputs.markdown }}
+          ${STEPS_EXTRACT_CHANGELOG_OUTPUTS_MARKDOWN}
           __EOF__
+        env:
+          STEPS_EXTRACT_CHANGELOG_OUTPUTS_MARKDOWN: ${{ steps.extract-changelog.outputs.markdown }}
 
       - uses: softprops/action-gh-release@v3
         with:
