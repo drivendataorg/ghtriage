@@ -31,12 +31,12 @@ jobs:
 
       - name: Check that versions match
         run: |
-          echo "Input version tag: [${GITHUB_EVENT_INPUTS_VERSION}] "
+          echo "Input version tag: [${INPUTS_VERSION}] "
           PACKAGE_VERSION=$(uv run python -m vspect read .)
           echo "Package version: [$PACKAGE_VERSION]"
-          [[ ${GITHUB_EVENT_INPUTS_VERSION} == "v$PACKAGE_VERSION" ]] || { exit 1; }
+          [[ ${INPUTS_VERSION} == "v$PACKAGE_VERSION" ]] || exit 1
         env:
-          GITHUB_EVENT_INPUTS_VERSION: ${{ github.event.inputs.version }}
+          INPUTS_VERSION: ${{ inputs.version }}
 
   build-and-inspect-package:
     name: Build and inspect package
@@ -56,12 +56,12 @@ jobs:
 
       - uses: hynek/build-and-inspect-python-package@2abe76da66d0a6a4a227101f9348ee855797cfa5 # v3.0.1
         with:
-          attest-build-provenance-github: ${{ inputs.dry-run == 'false' && 'true' || 'false' }}
+          attest-build-provenance-github: ${{ !inputs.dry-run }}
 
   upload-to-test-pypi:
     name: Upload package to Test PyPI
     needs: build-and-inspect-package
-    if: github.event.inputs.dry-run == 'false'
+    if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -82,7 +82,7 @@ jobs:
   upload-to-prod-pypi:
     name: Upload package to Prod PyPI
     needs: upload-to-test-pypi
-    if: github.event.inputs.dry-run == 'false'
+    if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -100,7 +100,7 @@ jobs:
   create-github-release:
     name: Create GitHub release
     needs: upload-to-prod-pypi
-    if: github.event.inputs.dry-run == 'false'
+    if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -121,7 +121,7 @@ jobs:
         uses: sean0x42/markdown-extract@7b185cbe85263116bbf741e739e7198ba86465dc # v2.1.0
         with:
           file: CHANGELOG.md
-          pattern: ${{ github.event.inputs.version }}
+          pattern: ${{ inputs.version }}
 
       - name: Write output to file
         run: |
@@ -131,11 +131,11 @@ jobs:
 
       - name: Create release
         run: |
-            gh release create ${GITHUB_EVENT_INPUTS_VERSION} \
-              --target "${GITHUB_SHA}" \
-              --notes-file __CHANGELOG-extracted.md \
-              ./dist/*.whl \
-              ./dist/*.tar.gz
+          gh release create "${INPUTS_VERSION}" \
+            --target "${GITHUB_SHA}" \
+            --notes-file __CHANGELOG-extracted.md \
+            ./dist/*.whl \
+            ./dist/*.tar.gz
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_EVENT_INPUTS_VERSION: ${{ github.event.inputs.version }}
+          INPUTS_VERSION: ${{ inputs.version }}
