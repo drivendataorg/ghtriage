@@ -27,6 +27,7 @@ build-backend = "uv_build"
 dev = [
     "ruff",
     "vspect",
+    "zizmor",
     { include-group = "tests" },
     { include-group = "typecheck" },
 ]
