@@ -1,4 +1,4 @@
-name: lint-workflows
+name: zizmor
 
 on:
   push:
@@ -13,8 +13,8 @@ on:
 permissions: {}
 
 jobs:
-  lint-workflows:
-    name: Lint GitHub Actions Workflows
+  zizmor:
+    name: Run Zizmor audit
     runs-on: ubuntu-latest
     permissions:
       security-events: write
