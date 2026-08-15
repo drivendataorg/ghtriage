@@ -133,7 +133,8 @@ jobs:
     needs: [upload-to-test-pypi, upload-to-prod-pypi]
     if: ${{ !cancelled()
             && needs.upload-to-test-pypi.result == 'success'
-            && needs.upload-to-prod-pypi.result != 'failure' }}
+            && (needs.upload-to-prod-pypi.result == 'success'
+                || needs.upload-to-prod-pypi.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
