@@ -10,11 +10,11 @@ import re
 
 import duckdb
 import pytest
-from test_derived import _create_schema, _populate
 
 from ghtriage.derived import create_derived
 from ghtriage.full_text_search import create_search_indexes
 from ghtriage.query import execute_query
+from test_derived import _create_schema, _populate
 
 SKILL_DIR = Path(__file__).resolve().parents[1] / "src" / "ghtriage" / "skills" / "ghtriage"
 SKILL_FILES = (SKILL_DIR / "SKILL.md", SKILL_DIR / "references" / "query-cookbook.md")
