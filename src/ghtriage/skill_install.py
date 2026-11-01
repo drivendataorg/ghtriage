@@ -116,6 +116,13 @@ def _stamp_version(text: str, version: str) -> str:
     return "\n".join(lines)
 
 
+def _pin_fallback_commands(text: str, version: str) -> str:
+    """Pin the body's install and `uvx` commands to the version this skill describes."""
+    return text.replace(
+        "`uv tool install ghtriage`", f"`uv tool install ghtriage=={version}`"
+    ).replace("`uvx ghtriage ", f"`uvx ghtriage@{version} ")
+
+
 def _decode_skill_text(data: bytes) -> str:
     # The wheel carries whatever line endings the build checkout had (a Windows clone
     # without .gitattributes commits CRLF); the line-based stamper needs LF.
@@ -126,9 +133,8 @@ def _render_skill(version: str) -> dict[str, bytes]:
     """The exact bytes to write, keyed by path relative to the skill directory."""
     files: dict[str, bytes] = {}
     _collect(_skill_source(), "", files)
-    files[SKILL_FILE] = _stamp_version(_decode_skill_text(files[SKILL_FILE]), version).encode(
-        "utf-8"
-    )
+    skill_text = _stamp_version(_decode_skill_text(files[SKILL_FILE]), version)
+    files[SKILL_FILE] = _pin_fallback_commands(skill_text, version).encode("utf-8")
     return files
 
 
