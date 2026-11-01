@@ -116,11 +116,9 @@ def _stamp_version(text: str, version: str) -> str:
     return "\n".join(lines)
 
 
-def _pin_fallback_commands(text: str, version: str) -> str:
-    """Pin the body's install and `uvx` commands to the version this skill describes."""
-    return text.replace(
-        "`uv tool install ghtriage`", f"`uv tool install ghtriage=={version}`"
-    ).replace("`uvx ghtriage ", f"`uvx ghtriage@{version} ")
+def _pin_uvx_commands(text: str, version: str) -> str:
+    """Pin the body's `uvx` commands to the version this skill describes."""
+    return text.replace("`uvx ghtriage", f"`uvx ghtriage@{version}")
 
 
 def _decode_skill_text(data: bytes) -> str:
@@ -134,7 +132,7 @@ def _render_skill(version: str) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     _collect(_skill_source(), "", files)
     skill_text = _stamp_version(_decode_skill_text(files[SKILL_FILE]), version)
-    files[SKILL_FILE] = _pin_fallback_commands(skill_text, version).encode("utf-8")
+    files[SKILL_FILE] = _pin_uvx_commands(skill_text, version).encode("utf-8")
     return files
 
 
