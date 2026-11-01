@@ -1,6 +1,7 @@
 import importlib.metadata
 import importlib.resources
 from pathlib import Path
+import re
 
 import pytest
 
@@ -191,6 +192,17 @@ def test_install_creates_the_tree_and_stamps_the_version(tmp_path: Path) -> None
     assert (destination / "references" / "query-cookbook.md").read_bytes() == _source_tree()[
         "references/query-cookbook.md"
     ]
+
+
+def test_install_pins_every_uvx_command_to_the_installed_version(tmp_path: Path) -> None:
+    destination = tmp_path / "ghtriage"
+
+    result = install_skill(destination)
+
+    text = (destination / "SKILL.md").read_text(encoding="utf-8")
+    uvx_commands = re.findall(r"`uvx ghtriage[^`]*`", text)
+    assert len(uvx_commands) == 2
+    assert all(c.startswith(f"`uvx ghtriage@{result.version}") for c in uvx_commands)
 
 
 def test_reinstalling_identical_content_is_a_no_op(tmp_path: Path) -> None:
