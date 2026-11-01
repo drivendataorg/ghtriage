@@ -130,5 +130,6 @@ read [references/query-cookbook.md](references/query-cookbook.md).
 
 ## If ghtriage is not installed
 
-Install it as a tool (`uv tool install ghtriage`) or run it without installing:
-`uvx ghtriage --help`.
+Install it as a tool (`uv tool install ghtriage`), or run it without installing
+by replacing `ghtriage` with `uvx ghtriage` in every command above (for
+example, `uvx ghtriage --help`).
