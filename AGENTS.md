@@ -13,6 +13,7 @@ This project uses uv for Python environment management and Just as a task runner
 
 - Linting: `just lint` (variadic, passes through paths)
 - Auto-formatting: `just format` (variadic, passes through paths)
+- GitHub Actions audit: `just zizmor` (variadic, passes through zizmor flags). Online audits run only if `GH_TOKEN` is set.
 
 ## Design decisions
 
