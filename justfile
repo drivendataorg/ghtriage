@@ -34,5 +34,5 @@ typecheck python=python *args:
 # Run test suite (variadic)
 [arg("python", long)]
 test python=python *args:
-    uv run --python={{python}} --isolated --no-editable --no-dev --group tests --reinstall-package=ghtriage -- \
+    uv run --python={{python}} --isolated --no-editable --no-dev --group tests --reinstall -- \
         python -I -m pytest {{args}}
