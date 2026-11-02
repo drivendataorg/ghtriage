@@ -73,7 +73,7 @@ exclude-newer = "7 days"
 
 [tool.ruff]
 line-length = 99
-src = ["src/ghtriage/**/*.py", "tests/**/*.py"]
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = [
@@ -84,7 +84,6 @@ select = [
 unfixable = ["F"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["ghtriage"]
 force-sort-within-sections = true
 
 [tool.ty.src]

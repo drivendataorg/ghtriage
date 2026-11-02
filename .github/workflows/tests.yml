@@ -7,12 +7,17 @@ on:
   schedule:
     - cron: "0 0 * * 0"
   workflow_dispatch:
+    inputs:
+      upgrade:
+        description: Upgrade locked dependencies before running tests
+        type: boolean
+        default: false
 
 permissions: {}
 
 jobs:
   code-quality:
-    name: Code Quality
+    name: Code quality
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,6 +31,9 @@ jobs:
           just-version: "1.55.0" # Keep in sync with minimum-version in justfile
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Check lockfile is up to date
+        run: uv lock --check
 
       - name: Lint package
         run: just lint
@@ -70,6 +78,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache-suffix: "tests-${{ matrix.os }}-${{ matrix.python-version }}"
 
+      - name: Upgrade locked dependencies
+        if: github.event_name == 'schedule' || inputs.upgrade
+        run: uv lock --upgrade
+
       - name: Run static typechecking
         run: just typecheck --python=${{ matrix.python-version }}
 
@@ -82,6 +94,16 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
         if: ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' }}
+
+  all-green:
+    name: All green
+    if: always()
+    needs: [code-quality, zizmor, tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
+        with:
+          jobs: ${{ toJSON(needs) }}
 
   notify:
     name: Notify failed build
