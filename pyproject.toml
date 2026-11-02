@@ -91,7 +91,7 @@ include = ["src"]
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "--cov=ghtriage --cov-report=term --cov-report=html --cov-report=xml"
+addopts = "--cov=ghtriage --cov-report=term --cov-report=html"
 testpaths = ["tests"]
 
 [tool.coverage.run]
@@ -101,5 +101,6 @@ source = ["ghtriage"]
 [tool.coverage.paths]
 ghtriage = [
   "src/ghtriage/",
+  "*/src/ghtriage/",
   "*/site-packages/ghtriage/"
 ]

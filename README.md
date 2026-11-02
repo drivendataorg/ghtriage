@@ -1,5 +1,7 @@
 # ghtriage
 
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/drivendataorg/ghtriage/badges/coverage.json)](https://github.com/drivendataorg/ghtriage/actions/workflows/tests.yml?query=branch%3Amain)
+
 **A local, queryable snapshot of a GitHub repository's issues, pull requests, and comments. Built for AI coding agents to assist with project management.**
 
 **ghtriage** pulls a repository's GitHub data into a local DuckDB database that an agent can cheaply and quickly query with SQL. The motivating use case is project management and triage: an agent asked to find stale issues, likely duplicates, or unanswered questions can answer from the local database in milliseconds instead of paging through the GitHub API, complemented by the commit history already available in the local Git repository.
