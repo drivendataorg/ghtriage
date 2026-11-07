@@ -315,3 +315,16 @@ frontmatter's shape, because the installer inserts the line by hand.
 Rejected: stamping via a YAML round-trip instead of a line insert. The frontmatter is
 hand-written, with a folded `description` block that a YAML dumper would reflow, and the file is
 under our control with a test on its shape — the dependency and the churn buy nothing.
+
+### Skill command pinning
+
+**`ghtriage skill install` pins the skill's `uvx ghtriage` commands to the installed CLI's version,
+and leaves `uv tool install ghtriage` unpinned.** (2026-11-01,
+[#35](https://github.com/drivendataorg/ghtriage/pull/35))
+Unpinned, `uvx ghtriage` runs whatever version uv has cached, which may not be the version the
+installed skill describes.
+Rejected: pinning `uv tool install ghtriage` too, as `ghtriage==X`. uv records the exact pin in the
+tool receipt, so `uv tool upgrade ghtriage` would skip the tool from then on.
+Rejected: pinning the commands for `gh skill install` as well. That channel copies the files
+verbatim from a git ref, so there is no installed version to pin to (see
+[Skill distribution](#skill-distribution)).

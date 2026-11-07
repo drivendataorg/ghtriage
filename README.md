@@ -1,5 +1,8 @@
 # ghtriage
 
+[![PyPI](https://img.shields.io/pypi/v/ghtriage.svg)](https://pypi.org/project/ghtriage/)
+[![Supported Python versions](https://img.shields.io/pypi/pyversions/ghtriage)](https://pypi.org/project/ghtriage/)
+[![tests](https://github.com/drivendataorg/ghtriage/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/drivendataorg/ghtriage/actions/workflows/tests.yml?query=branch%3Amain)
 [![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/drivendataorg/ghtriage/badges/coverage.json)](https://github.com/drivendataorg/ghtriage/actions/workflows/tests.yml?query=branch%3Amain)
 
 **A local, queryable snapshot of a GitHub repository's issues, pull requests, and comments. Built for AI coding agents to assist with project management.**
@@ -22,6 +25,7 @@ Install ghtriage as a CLI tool with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv tool install ghtriage
+ghtriage --help
 ```
 
 Or run it without installing:
