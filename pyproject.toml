@@ -1,6 +1,6 @@
 [project]
 name = "ghtriage"
-version = "0.1.0"
+version = "0.1.1"
 description = "A local, queryable snapshot of a GitHub repository's issues, pull requests, and comments. Built for AI coding agents to assist with project management."
 readme = "README.md"
 authors = [
