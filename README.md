@@ -22,6 +22,7 @@ Install ghtriage as a CLI tool with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv tool install ghtriage
+ghtriage --help
 ```
 
 Or run it without installing:
